@@ -6,6 +6,7 @@ use serde::Deserialize;
 use crate::core::Task;
 
 /// The parsed top-level contents of the `tasks.toml` config file.
+/// It's used for handling task list config files, not task-related stuff, so it's not put in `core.rs`.
 #[derive(Debug, Default, Deserialize)]
 pub struct TasksList {
     /// The list of tasks defined in the config file.
