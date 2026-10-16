@@ -1,4 +1,5 @@
 use std::fs;
+use std::io;
 
 use log::{debug, info, warn};
 use serde::Deserialize;
@@ -23,7 +24,7 @@ impl TasksList {
     /// The config file is created (empty) if it doesn't already exist, so a
     /// missing file is not an error. The returned `TasksList` may therefore
     /// hold an empty task list.
-    pub fn new() -> std::io::Result<Self> {
+    pub fn new() -> io::Result<Self> {
         let mut list = Self::default();
         list.load()?;
         Ok(list)
@@ -33,7 +34,7 @@ impl TasksList {
     /// The config file is created (empty) if it doesn't already exist, so a
     /// missing file is not an error. The current contents of `self` are
     /// replaced by whatever is loaded from the file.
-    pub fn load(&mut self) -> std::io::Result<()> {
+    pub fn load(&mut self) -> io::Result<()> {
         let config_path = Self::config_path()?;
         self.load_from(&config_path)
     }
@@ -42,7 +43,7 @@ impl TasksList {
     ///
     /// The config file is created (empty) if it doesn't already exist, so a
     /// missing file is not an error.
-    fn load_from(&mut self, config_path: &std::path::Path) -> std::io::Result<()> {
+    fn load_from(&mut self, config_path: &std::path::Path) -> io::Result<()> {
         debug!("Using config file at {}", config_path.display());
 
         // Ensure the config directory and file exist.
@@ -57,8 +58,8 @@ impl TasksList {
         // Read and parse the config file, replacing the current contents.
         let content = fs::read_to_string(config_path)?;
         *self = toml::from_str(&content).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            io::Error::new(
+                io::ErrorKind::InvalidData,
                 format!("Failed to parse {}: {e}", config_path.display()),
             )
         })?;
@@ -72,13 +73,10 @@ impl TasksList {
         Ok(())
     }
     /// Resolve the platform-specific path to the `tasks.toml` config file.
-    fn config_path() -> std::io::Result<std::path::PathBuf> {
+    fn config_path() -> io::Result<std::path::PathBuf> {
         // Resolve the platform-specific config directory for this application.
         let dirs = directories::ProjectDirs::from("", "", env!("CARGO_CRATE_NAME")).ok_or(
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Can't find the project directory.",
-            ),
+            io::Error::new(io::ErrorKind::NotFound, "Can't find the project directory."),
         )?;
         Ok(dirs.config_dir().join("tasks.toml"))
     }
@@ -233,7 +231,7 @@ mod tests {
         let result = list.load_from(&config_path);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
 
         fs::remove_dir_all(&dir).unwrap();
     }
