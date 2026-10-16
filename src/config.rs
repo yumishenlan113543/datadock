@@ -70,7 +70,7 @@ impl TasksList {
         })?;
 
         info!(
-            "Loaded {} task(s) from {}",
+            "Loaded {} task(s) from \"{}\"",
             self.tasks.len(),
             config_path.display()
         );
