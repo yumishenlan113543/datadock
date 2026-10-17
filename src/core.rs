@@ -1,42 +1,65 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use serde::Deserialize;
+use tempfile::NamedTempFile;
 
 use crate::config::TasksList;
+
+/// The list of files that failed to copy, each paired with the error message
+/// explaining why the copy failed.
+type FailedFiles = Vec<(PathBuf, String)>;
 
 /// Schedule every task in `tasks_list` on its own background thread and return
 /// the [`thread::JoinHandle`]s so the caller can wait for them to finish.
 ///
-/// Each task registers its own [`ProgressBar`] under `mp`, which the caller
-/// owns and uses to render the whole set of bars together.
+/// Each handle resolves to a `(path, error message)` pair for each file that
+/// failed to copy for that task. Each task registers its own [`ProgressBar`]
+/// under `mp`, which the caller owns and uses to render the whole set of bars
+/// together.
 ///
-/// A task that fails to be scheduled (e.g. its source directory cannot be
-/// scanned) is collected into the returned error list and skipped; the
+/// A task whose source or destination directory is missing is skipped (with a
+/// message) rather than scheduled. A task that fails to be scheduled for any
+/// other reason is collected into the returned error list. In both cases the
 /// remaining tasks still run.
 pub fn run_tasks_list(
     tasks_list: &TasksList,
     mp: &MultiProgress,
-) -> (Vec<thread::JoinHandle<io::Result<()>>>, Vec<io::Error>) {
+) -> (
+    Vec<thread::JoinHandle<io::Result<FailedFiles>>>,
+    Vec<io::Error>,
+) {
     let mut join_handles = Vec::new();
     let mut errors = Vec::new();
 
     for task in &tasks_list.tasks {
-        info!("Starting task \"{}\"", task.name);
-        match task.run(mp) {
-            Ok(join_handle) => {
-                join_handles.push(join_handle);
-                info!("Task \"{}\" scheduled on a background thread", task.name);
+        if task.directories_exist() {
+            info!("Starting task \"{}\"", task.name);
+            let _ = mp.println(format!("Starting task \"{}\"", task.name));
+            match task.run(mp) {
+                Ok(join_handle) => {
+                    join_handles.push(join_handle);
+                    info!("Task \"{}\" scheduled on a background thread", task.name);
+                }
+                Err(e) => {
+                    warn!("Task \"{}\" failed to start: {e}", task.name);
+                    errors.push(e);
+                }
             }
-            Err(e) => {
-                warn!("Task \"{}\" failed to start: {e}", task.name);
-                errors.push(e);
-            }
+        } else {
+            info!(
+                "At least one folder for task \"{}\" doesn't exist, skipping...",
+                task.name
+            );
+            let _ = mp.println(format!(
+                "At least one folder for task \"{}\" doesn't exist, skipping...",
+                task.name
+            ));
         }
     }
 
@@ -117,18 +140,25 @@ fn files_differ(file_a: &Path, file_b: &Path) -> io::Result<bool> {
 /// `src` and `size` is the file's length in bytes. Parent directories are
 /// created as needed, and each file's target path is `dst` joined with its
 /// relative path. Progress is reported to `bar` in bytes.
+///
+/// A file that fails to copy is skipped (its existing destination, if any, is
+/// left intact) and its absolute source path and error message are collected;
+/// the remaining files are still copied. The returned list holds a
+/// `(path, error message)` pair for each failure, so a single copy error does
+/// not abort the whole task.
 fn copy_file_list(
     src: &Path,
     dst: &Path,
     files: &[(PathBuf, u64)],
     bar: &ProgressBar,
-) -> io::Result<()> {
+) -> io::Result<FailedFiles> {
     info!(
         "Copying {} file(s) from \"{}\" to \"{}\"",
         files.len(),
         src.display(),
         dst.display()
     );
+    let mut failures = Vec::new();
 
     for (rel, _size) in files {
         // Source path = src / relative path, target = dst / relative path.
@@ -151,12 +181,20 @@ fn copy_file_list(
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| rel.display().to_string()),
         );
-        copy_file_stream(&src_path, &target, bar)?;
+        if let Err(error) = copy_file_stream(&src_path, &target, bar) {
+            // The file failed to copy: record it and continue with the rest.
+            // The copy is written to a temporary file and only moved into
+            // place on success, so an existing destination is left intact.
+            let abs = src.join(rel);
+            warn!("Failed to copy \"{}\": {error}; skipping it", abs.display());
+            // Push the failed file path and its error message to `failures`.
+            failures.push((abs, error.to_string()));
+        }
     }
 
     bar.finish();
     info!("Finished copying to \"{}\"", dst.display());
-    Ok(())
+    Ok(failures)
 }
 
 /// Copy a single file from `src` to `dst` in fixed-size chunks, reporting each
@@ -164,9 +202,17 @@ fn copy_file_list(
 ///
 /// Unlike `fs::copy`, this streams the file so progress can be measured, and it
 /// preserves the source file's permission bits to match `fs::copy`'s behavior.
+///
+/// The copy is written to a temporary file in the destination directory and
+/// atomically renamed into place only on success, so a failed copy never
+/// truncates or corrupts an existing destination file.
 fn copy_file_stream(src: &Path, dst: &Path, bar: &ProgressBar) -> io::Result<()> {
     let mut reader = BufReader::new(fs::File::open(src)?);
-    let mut writer = BufWriter::new(fs::File::create(dst)?);
+
+    // The temporary file lives next to `dst` (same directory) so the final
+    // rename is atomic; it is removed automatically if anything goes wrong.
+    let parent = dst.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp = NamedTempFile::new_in(parent)?;
     let mut buf = [0u8; 64 * 1024];
 
     loop {
@@ -174,15 +220,16 @@ fn copy_file_stream(src: &Path, dst: &Path, bar: &ProgressBar) -> io::Result<()>
         if n == 0 {
             break;
         }
-        writer.write_all(&buf[..n])?;
+        tmp.write_all(&buf[..n])?;
         bar.inc(n as u64);
     }
 
-    writer.flush()?;
-    drop(writer);
+    // `fs::copy` also copies the permission bits; mirror that here (on the
+    // temporary file, before it is moved into place).
+    fs::set_permissions(tmp.path(), fs::metadata(src)?.permissions())?;
 
-    // `fs::copy` also copies the permission bits; mirror that here.
-    fs::set_permissions(dst, fs::metadata(src)?.permissions())?;
+    // Atomically replace `dst` with the fully-written temporary file.
+    tmp.persist(dst).map_err(|e| e.error)?;
 
     Ok(())
 }
@@ -250,16 +297,26 @@ impl Task {
 
         Ok(())
     }
+    /// Return whether both the source and destination directories exist on
+    /// disk.
+    ///
+    /// A task is only run when both exist, so [`run_tasks_list`] skips a task
+    /// whose directories are missing (e.g. a removable drive that isn't
+    /// mounted) instead of scheduling it.
+    fn directories_exist(&self) -> bool {
+        self.src.exists() && self.dst.exists()
+    }
     /// Compute the files under `src` that are missing from `dst` or whose
     /// `dst` differ from the corresponding files in `src`, then spawn a
     /// background thread to copy them while reporting progress to a bar
     /// registered under `mp`.
     ///
-    /// Returns the thread's [`thread::JoinHandle`], or an error if the source
-    /// or destination directory cannot be scanned. It is normal for this to
-    /// error when either `src` or `dst` does not exist, so such a task
-    /// simply fails to start, not fails during running.
-    fn run(&self, mp: &MultiProgress) -> io::Result<thread::JoinHandle<io::Result<()>>> {
+    /// Returns the thread's [`thread::JoinHandle`], which resolves to a
+    /// `(path, error message)` pair for each file that failed to copy, or an
+    /// error if the source or destination directory cannot be scanned. Callers
+    /// normally check [`Task::directories_exist`] first, so this runs only when
+    /// both directories are present.
+    fn run(&self, mp: &MultiProgress) -> io::Result<thread::JoinHandle<io::Result<FailedFiles>>> {
         // Determine which files to copy.
         let files_to_copy = self.compute_files_to_copy()?;
         if files_to_copy.is_empty() {
@@ -283,7 +340,7 @@ impl Task {
         let bar = mp.add(ProgressBar::new(total_bytes));
         bar.set_style(
             ProgressStyle::with_template(
-                "{prefix} [{elapsed_precise} / {eta}] {bar:40.cyan/blue} {bytes}/{total_bytes} {msg}",
+                "{prefix} [{elapsed_precise}/{eta}] {bar:40.cyan/blue} {bytes}/{total_bytes} {msg}",
             )
             .expect("valid progress bar template"),
         );
@@ -307,6 +364,8 @@ impl Task {
     /// under `dst` are left untouched. Each returned entry is a `(relative
     /// path, size in bytes)` pair.
     fn compute_files_to_copy(&self) -> io::Result<Vec<(PathBuf, u64)>> {
+        info!("Computing files in task \"{}\" to copy...", self.name);
+
         let src_files = collect_files(&self.src)?;
         let dst_files = collect_files(&self.dst)?;
 
@@ -581,6 +640,27 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn copy_file_stream_preserves_existing_destination_on_failure() {
+        let dir = temp_dir("copy_stream_preserve");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        // A directory passed as a "file" opens successfully on Unix but fails
+        // on read (EISDIR), after the temporary file has been created.
+        fs::create_dir_all(src.join("dir_a")).unwrap();
+        // A pre-existing destination that must survive the failed copy intact.
+        write_file(&dst, b"original");
+
+        let bar = hidden_bar();
+        let result = copy_file_stream(&src.join("dir_a"), &dst, &bar);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&dst).unwrap(), b"original");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn copy_file_list_preserves_relative_structure() {
         let dir = temp_dir("copy_list");
@@ -597,6 +677,63 @@ mod tests {
 
         assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"a");
         assert_eq!(fs::read(dst.join("sub").join("b.txt")).unwrap(), b"b");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn copy_file_list_records_failed_files_and_continues() {
+        let dir = temp_dir("copy_list_fail");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        write_file(&src.join("good.txt"), b"ok");
+        fs::create_dir_all(&dst).unwrap();
+
+        // The second entry's source does not exist, so that copy fails, but the
+        // remaining files are still copied and the bar is finished normally.
+        let files = vec![
+            (PathBuf::from("good.txt"), 2),
+            (PathBuf::from("missing.txt"), 0),
+        ];
+        let bar = hidden_bar();
+        let failures = copy_file_list(&src, &dst, &files, &bar).unwrap();
+
+        // The good file is copied and the missing one is recorded as a failure
+        // together with its error message.
+        assert_eq!(fs::read(dst.join("good.txt")).unwrap(), b"ok");
+        assert_eq!(failures.len(), 1);
+        let (failed_path, error_message) = &failures[0];
+        assert_eq!(failed_path, &src.join("missing.txt"));
+        assert!(!error_message.is_empty());
+        assert!(bar.is_finished());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_file_list_preserves_destination_on_failed_copy() {
+        let dir = temp_dir("copy_list_preserve");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        // A directory passed as a "file" opens successfully on Unix but fails
+        // on read (EISDIR), after the temporary file has been created.
+        fs::create_dir_all(src.join("dir_a")).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        // A pre-existing destination that must survive the failed copy intact.
+        write_file(&dst.join("dir_a"), b"original");
+
+        let files = vec![(PathBuf::from("dir_a"), 0)];
+        let bar = hidden_bar();
+        let failures = copy_file_list(&src, &dst, &files, &bar).unwrap();
+
+        // The failed copy is recorded (path and error message), and the
+        // existing destination is intact.
+        assert_eq!(failures.len(), 1);
+        let (failed_path, error_message) = &failures[0];
+        assert_eq!(failed_path, &src.join("dir_a"));
+        assert!(!error_message.is_empty());
+        assert_eq!(fs::read(dst.join("dir_a")).unwrap(), b"original");
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -693,26 +830,62 @@ mod tests {
 
     #[test]
     fn validate_rejects_identical_paths() {
-        let t = task("t", Path::new("/home/user/photos"), Path::new("/home/user/photos"));
+        let t = task(
+            "t",
+            Path::new("/home/user/photos"),
+            Path::new("/home/user/photos"),
+        );
         assert!(t._validate().is_err());
     }
 
     #[test]
     fn validate_rejects_dst_nested_in_src() {
-        let t = task("t", Path::new("/home/user/photos"), Path::new("/home/user/photos/backup"));
+        let t = task(
+            "t",
+            Path::new("/home/user/photos"),
+            Path::new("/home/user/photos/backup"),
+        );
         assert!(t._validate().is_err());
     }
 
     #[test]
     fn validate_rejects_src_nested_in_dst() {
-        let t = task("t", Path::new("/home/user/photos/sub"), Path::new("/home/user/photos"));
+        let t = task(
+            "t",
+            Path::new("/home/user/photos/sub"),
+            Path::new("/home/user/photos"),
+        );
         assert!(t._validate().is_err());
     }
 
     #[test]
     fn validate_accepts_sibling_paths() {
-        let t = task("t", Path::new("/home/user/photos"), Path::new("/backup/photos"));
+        let t = task(
+            "t",
+            Path::new("/home/user/photos"),
+            Path::new("/backup/photos"),
+        );
         assert!(t._validate().is_ok());
+    }
+
+    #[test]
+    fn directories_exist_requires_both_directories() {
+        let dir = temp_dir("dirs_exist");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+
+        // Neither exists.
+        assert!(!task("t", &dir.join("other_src"), &dir.join("other_dst")).directories_exist());
+        // Only `src` exists.
+        assert!(!task("t", &src, &dir.join("other_dst")).directories_exist());
+        // Only `dst` exists.
+        assert!(!task("t", &dir.join("other_src"), &dst).directories_exist());
+        // Both exist.
+        assert!(task("t", &src, &dst).directories_exist());
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -764,8 +937,8 @@ mod tests {
     }
 
     #[test]
-    fn run_tasks_list_collects_startup_errors() {
-        let dir = temp_dir("run_list_errors");
+    fn run_tasks_list_skips_tasks_with_missing_directories() {
+        let dir = temp_dir("run_list_skip");
         fs::create_dir_all(&dir).unwrap();
 
         let tasks = TasksList {
@@ -775,14 +948,16 @@ mod tests {
         let mp = hidden_multi_progress();
         let (handles, errors) = run_tasks_list(&tasks, &mp);
 
+        // A task whose source directory is missing is skipped, not reported as
+        // an error, so neither a handle nor a startup error is produced.
         assert!(handles.is_empty());
-        assert_eq!(errors.len(), 1);
+        assert!(errors.is_empty());
 
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn run_tasks_list_runs_remaining_tasks_after_failure() {
+    fn run_tasks_list_runs_remaining_tasks_when_one_is_skipped() {
         let dir = temp_dir("run_list_mixed");
         let good_src = dir.join("good_src");
         let good_dst = dir.join("good_dst");
@@ -791,7 +966,8 @@ mod tests {
 
         let tasks = TasksList {
             tasks: vec![
-                task("bad", &dir.join("missing"), &dir.join("dst")),
+                // This task's source directory is missing, so it is skipped.
+                task("skipped", &dir.join("missing"), &dir.join("dst")),
                 task("good", &good_src, &good_dst),
             ],
         };
@@ -799,7 +975,8 @@ mod tests {
         let mp = hidden_multi_progress();
         let (handles, errors) = run_tasks_list(&tasks, &mp);
 
-        assert_eq!(errors.len(), 1);
+        // The skipped task produces no error, and the remaining task still runs.
+        assert!(errors.is_empty());
         assert_eq!(handles.len(), 1);
         for handle in handles {
             handle.join().unwrap().unwrap();

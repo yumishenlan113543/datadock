@@ -9,5 +9,6 @@ env_logger = "0.11.11"
 indicatif = "0.18.6"
 log = "0.4.34"
 serde = { version = "1", features = ["derive"] }
+tempfile = "3"
 toml = "1.1.8"
 walkdir = "2.5.0"
