@@ -203,6 +203,53 @@ pub struct Task {
 }
 
 impl Task {
+    /// Validate this task's configuration, returning an error when it is
+    /// invalid.
+    ///
+    /// A task is rejected when either path is relative, or when the source and
+    /// destination are identical or nested within one another (which would back
+    /// a directory up into itself).
+    pub(crate) fn _validate(&self) -> io::Result<()> {
+        if !self.src.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Task \"{}\": source path \"{}\" must be absolute",
+                    self.name,
+                    self.src.display()
+                ),
+            ));
+        }
+        if !self.dst.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Task \"{}\": destination path \"{}\" must be absolute",
+                    self.name,
+                    self.dst.display()
+                ),
+            ));
+        }
+
+        // Resolve symlinks where possible (falling back to the already-absolute
+        // path when it doesn't exist yet) so nesting through a symlink is also
+        // caught.
+        let src = fs::canonicalize(&self.src).unwrap_or_else(|_| self.src.clone());
+        let dst = fs::canonicalize(&self.dst).unwrap_or_else(|_| self.dst.clone());
+        if dst.starts_with(&src) || src.starts_with(&dst) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Task \"{}\": source \"{}\" and destination \"{}\" must not be identical or nested",
+                    self.name,
+                    self.src.display(),
+                    self.dst.display()
+                ),
+            ));
+        }
+
+        Ok(())
+    }
     /// Compute the files under `src` that are missing from `dst` or whose
     /// `dst` differ from the corresponding files in `src`, then spawn a
     /// background thread to copy them while reporting progress to a bar
@@ -251,7 +298,6 @@ impl Task {
             copy_file_list(&src, &dst, &files_to_copy, &bar)
         }))
     }
-
     /// Compute the relative paths and byte sizes of every source file that
     /// must be copied to make `dst` mirror `src`.
     ///
@@ -631,6 +677,42 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_relative_src() {
+        let t = task("t", Path::new("photos"), Path::new("/backup/photos"));
+        assert!(t._validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_relative_dst() {
+        let t = task("t", Path::new("/home/user/photos"), Path::new("backup"));
+        assert!(t._validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_identical_paths() {
+        let t = task("t", Path::new("/home/user/photos"), Path::new("/home/user/photos"));
+        assert!(t._validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_dst_nested_in_src() {
+        let t = task("t", Path::new("/home/user/photos"), Path::new("/home/user/photos/backup"));
+        assert!(t._validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_src_nested_in_dst() {
+        let t = task("t", Path::new("/home/user/photos/sub"), Path::new("/home/user/photos"));
+        assert!(t._validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_sibling_paths() {
+        let t = task("t", Path::new("/home/user/photos"), Path::new("/backup/photos"));
+        assert!(t._validate().is_ok());
     }
 
     #[test]
