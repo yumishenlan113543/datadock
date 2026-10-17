@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::thread;
 
@@ -73,12 +73,36 @@ fn collect_files(root: &Path) -> io::Result<HashSet<PathBuf>> {
 /// Compare `file_a` and `file_b`, returning `Ok(true)` when the files differ.
 ///
 /// The comparison is done by file size first (a cheap check) and falls back to
-/// comparing the file contents only when the sizes are equal.
+/// comparing the file contents in fixed-size chunks only when the sizes are
+/// equal, so large files are not loaded fully into memory.
 fn files_differ(file_a: &Path, file_b: &Path) -> io::Result<bool> {
+    // Compare sizes first: a cheap way to reject most changed files without
+    // reading their contents.
     if fs::metadata(file_a)?.len() != fs::metadata(file_b)?.len() {
         return Ok(true);
     }
-    Ok(fs::read(file_a)? != fs::read(file_b)?)
+
+    // Sizes are equal; compare the contents chunk by chunk.
+    let mut a = BufReader::new(fs::File::open(file_a)?);
+    let mut b = BufReader::new(fs::File::open(file_b)?);
+
+    loop {
+        let buf_a = a.fill_buf()?;
+        let buf_b = b.fill_buf()?;
+        let n = buf_a.len().min(buf_b.len());
+
+        // Both readers are exhausted (sizes were equal and the same number
+        // of bytes were consumed from each), so the files are identical.
+        if n == 0 { 
+            return Ok(false);
+        }
+        if buf_a[..n] != buf_b[..n] {
+            return Ok(true);
+        }
+
+        a.consume(n);
+        b.consume(n);
+    }
 }
 
 /// Copy every file in `rel_paths` from under `src` to the matching location
