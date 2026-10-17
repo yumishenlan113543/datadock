@@ -7,7 +7,9 @@ use serde::Deserialize;
 use crate::core::Task;
 
 /// The parsed top-level contents of the `tasks.toml` config file.
-/// It's used for handling task list config files, not task-related stuff, so it's not put in `core.rs`.
+///
+/// This only models the structure of the config file, so it lives here in
+/// `config.rs` rather than with the task behavior in `core.rs`.
 #[derive(Debug, Default, Deserialize)]
 pub struct TasksList {
     /// The list of tasks defined in the config file.
@@ -51,7 +53,10 @@ impl TasksList {
             fs::create_dir_all(parent)?;
         }
         if !config_path.exists() {
-            warn!("Config file not found; creating an empty one.");
+            warn!(
+                "Config file not found at \"{}\"; creating an empty one.",
+                config_path.display()
+            );
             fs::write(config_path, "")?;
         }
 
