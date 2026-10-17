@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use serde::Deserialize;
 
@@ -12,18 +13,22 @@ use crate::config::TasksList;
 /// Schedule every task in `tasks_list` on its own background thread and return
 /// the [`thread::JoinHandle`]s so the caller can wait for them to finish.
 ///
+/// Each task registers its own [`ProgressBar`] under `mp`, which the caller
+/// owns and uses to render the whole set of bars together.
+///
 /// A task that fails to be scheduled (e.g. its source directory cannot be
 /// scanned) is collected into the returned error list and skipped; the
 /// remaining tasks still run.
 pub fn run_tasks_list(
     tasks_list: &TasksList,
+    mp: &MultiProgress,
 ) -> (Vec<thread::JoinHandle<io::Result<()>>>, Vec<io::Error>) {
     let mut join_handles = Vec::new();
     let mut errors = Vec::new();
 
     for task in &tasks_list.tasks {
         info!("Starting task \"{}\"", task.name);
-        match task.run() {
+        match task.run(mp) {
             Ok(join_handle) => {
                 join_handles.push(join_handle);
                 info!("Task \"{}\" scheduled on a background thread", task.name);
@@ -105,21 +110,27 @@ fn files_differ(file_a: &Path, file_b: &Path) -> io::Result<bool> {
     }
 }
 
-/// Copy every file in `rel_paths` from under `src` to the matching location
-/// under `dst`, preserving the relative directory structure.
+/// Copy every file in `files` from under `src` to the matching location under
+/// `dst`, preserving the relative directory structure.
 ///
-/// Each entry in `rel_paths` is a path relative to `src`. Parent directories
-/// are created as needed, and each file's target path is `dst` joined with its
-/// relative path.
-fn copy_file_list(src: &Path, dst: &Path, rel_paths: &[PathBuf]) -> io::Result<()> {
+/// Each entry in `files` is a `(path, size)` pair where `path` is relative to
+/// `src` and `size` is the file's length in bytes. Parent directories are
+/// created as needed, and each file's target path is `dst` joined with its
+/// relative path. Progress is reported to `bar` in bytes.
+fn copy_file_list(
+    src: &Path,
+    dst: &Path,
+    files: &[(PathBuf, u64)],
+    bar: &ProgressBar,
+) -> io::Result<()> {
     info!(
         "Copying {} file(s) from \"{}\" to \"{}\"",
-        rel_paths.len(),
+        files.len(),
         src.display(),
         dst.display()
     );
 
-    for rel in rel_paths {
+    for (rel, _size) in files {
         // Source path = src / relative path, target = dst / relative path.
         let src_path = src.join(rel);
         let target = dst.join(rel);
@@ -135,10 +146,44 @@ fn copy_file_list(src: &Path, dst: &Path, rel_paths: &[PathBuf]) -> io::Result<(
             src_path.display(),
             target.display()
         );
-        fs::copy(&src_path, &target)?;
+        bar.set_message(
+            rel.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| rel.display().to_string()),
+        );
+        copy_file_stream(&src_path, &target, bar)?;
     }
 
+    bar.finish();
     info!("Finished copying to \"{}\"", dst.display());
+    Ok(())
+}
+
+/// Copy a single file from `src` to `dst` in fixed-size chunks, reporting each
+/// chunk's byte count to `bar`.
+///
+/// Unlike `fs::copy`, this streams the file so progress can be measured, and it
+/// preserves the source file's permission bits to match `fs::copy`'s behavior.
+fn copy_file_stream(src: &Path, dst: &Path, bar: &ProgressBar) -> io::Result<()> {
+    let mut reader = BufReader::new(fs::File::open(src)?);
+    let mut writer = BufWriter::new(fs::File::create(dst)?);
+    let mut buf = [0u8; 64 * 1024];
+
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n])?;
+        bar.inc(n as u64);
+    }
+
+    writer.flush()?;
+    drop(writer);
+
+    // `fs::copy` also copies the permission bits; mirror that here.
+    fs::set_permissions(dst, fs::metadata(src)?.permissions())?;
+
     Ok(())
 }
 
@@ -159,14 +204,15 @@ pub struct Task {
 
 impl Task {
     /// Compute the files under `src` that are missing from `dst` or whose
-    /// `dst` differ from the corresponding files in `src`, then spawn
-    /// a background thread to copy them.
+    /// `dst` differ from the corresponding files in `src`, then spawn a
+    /// background thread to copy them while reporting progress to a bar
+    /// registered under `mp`.
     ///
     /// Returns the thread's [`thread::JoinHandle`], or an error if the source
     /// or destination directory cannot be scanned. It is normal for this to
     /// error when either `src` or `dst` does not exist, so such a task
     /// simply fails to start, not fails during running.
-    fn run(&self) -> io::Result<thread::JoinHandle<io::Result<()>>> {
+    fn run(&self, mp: &MultiProgress) -> io::Result<thread::JoinHandle<io::Result<()>>> {
         // Determine which files to copy.
         let files_to_copy = self.compute_files_to_copy()?;
         if files_to_copy.is_empty() {
@@ -185,22 +231,36 @@ impl Task {
             );
         }
 
-        // Clone `src` and `dst`, so the copy thread can use them.
+        // Register a progress bar for this task and size it in bytes.
+        let total_bytes: u64 = files_to_copy.iter().map(|(_, size)| *size).sum();
+        let bar = mp.add(ProgressBar::new(total_bytes));
+        bar.set_style(
+            ProgressStyle::with_template(
+                "{prefix} [{elapsed_precise} / {eta}] {bar:40.cyan/blue} {bytes}/{total_bytes} {msg}",
+            )
+            .expect("valid progress bar template"),
+        );
+        bar.set_prefix(self.name.clone());
+
+        // Clone `src`, `dst` and the bar so the copy thread can use them.
         let src = self.src.clone();
         let dst = self.dst.clone();
+        let bar = bar.clone();
 
         Ok(thread::spawn(move || {
-            copy_file_list(&src, &dst, &files_to_copy)
+            copy_file_list(&src, &dst, &files_to_copy, &bar)
         }))
     }
-    /// Compute the relative paths of every source file that must be copied to
-    /// make `dst` mirror `src`.
+
+    /// Compute the relative paths and byte sizes of every source file that
+    /// must be copied to make `dst` mirror `src`.
     ///
     /// A file is copied when it is missing under `dst`, or when its destination
     /// copy differs from the source (compared by size first, then by content).
     /// The source file always overwrites the destination. Files that exist only
-    /// under `dst` are left untouched.
-    fn compute_files_to_copy(&self) -> io::Result<Vec<PathBuf>> {
+    /// under `dst` are left untouched. Each returned entry is a `(relative
+    /// path, size in bytes)` pair.
+    fn compute_files_to_copy(&self) -> io::Result<Vec<(PathBuf, u64)>> {
         let src_files = collect_files(&self.src)?;
         let dst_files = collect_files(&self.dst)?;
 
@@ -216,14 +276,14 @@ impl Task {
             // Copy when the destination is missing the file, or when the
             // existing destination copy differs from the source (size, then
             // content).
-            if !dst_files.contains(&dst_path) {
+            let should_copy = if !dst_files.contains(&dst_path) {
                 debug!(
                     "Task \"{}\": \"{}\" is missing from \"{}\"",
                     self.name,
                     rel.display(),
                     self.dst.display()
                 );
-                to_copy.push(rel);
+                true
             } else if files_differ(&src_path, &dst_path)? {
                 debug!(
                     "Task \"{}\": \"{}\" differs from its copy in \"{}\"",
@@ -231,7 +291,14 @@ impl Task {
                     rel.display(),
                     self.dst.display()
                 );
-                to_copy.push(rel);
+                true
+            } else {
+                false
+            };
+
+            if should_copy {
+                let size = fs::metadata(&src_path)?.len();
+                to_copy.push((rel, size));
             }
         }
 

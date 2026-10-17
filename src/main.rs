@@ -2,6 +2,7 @@ mod config;
 mod core;
 
 use config::TasksList;
+use indicatif::MultiProgress;
 use log::{error, info, warn};
 
 /// Configure a file-only logger that writes to `app.log` in the platform user
@@ -60,7 +61,8 @@ fn main() {
 
     // Run the tasks.
     println!("Running the tasks...");
-    let (handles, errors) = core::run_tasks_list(&tasks_list);
+    let progress = MultiProgress::new();
+    let (handles, errors) = core::run_tasks_list(&tasks_list, &progress);
 
     // Wait for every task thread and tally the results.
     let mut succeeded = 0u32;
@@ -87,6 +89,9 @@ fn main() {
         error!("Task error at startup: {error}");
         failed += 1;
     }
+
+    // Clear the progress bars so the final summary prints on a clean line.
+    let _ = progress.clear();
 
     info!("Run finished: {succeeded} succeeded, {failed} failed.");
     println!("Run finished: {succeeded} succeeded, {failed} failed.");
