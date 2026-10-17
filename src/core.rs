@@ -70,14 +70,15 @@ fn collect_files(root: &Path) -> io::Result<HashSet<PathBuf>> {
     Ok(files)
 }
 
-/// Rewrite every path in `files` to be relative to `root`, dropping any path
-/// that is not under `root`. Used to compare two directory trees by filename
-/// instead of by their (different) absolute paths.
-fn relative_paths(root: &Path, files: &HashSet<PathBuf>) -> HashSet<PathBuf> {
-    files
-        .iter()
-        .filter_map(|path| path.strip_prefix(root).ok().map(Path::to_path_buf))
-        .collect()
+/// Compare `file_a` and `file_b`, returning `Ok(true)` when the files differ.
+///
+/// The comparison is done by file size first (a cheap check) and falls back to
+/// comparing the file contents only when the sizes are equal.
+fn files_differ(file_a: &Path, file_b: &Path) -> io::Result<bool> {
+    if fs::metadata(file_a)?.len() != fs::metadata(file_b)?.len() {
+        return Ok(true);
+    }
+    Ok(fs::read(file_a)? != fs::read(file_b)?)
 }
 
 /// Copy every file in `rel_paths` from under `src` to the matching location
@@ -133,24 +134,19 @@ pub struct Task {
 }
 
 impl Task {
-    /// Compute the files that exist under `src` but are missing under `dst`,
-    /// then spawn a background thread to copy them.
+    /// Compute the files under `src` that are missing from `dst` or whose
+    /// `dst` differ from the corresponding files in `src`, then spawn
+    /// a background thread to copy them.
     ///
     /// Returns the thread's [`thread::JoinHandle`], or an error if the source
     /// or destination directory cannot be scanned. It is normal for this to
     /// error when either `src` or `dst` does not exist, so such a task
     /// simply fails to start, not fails during running.
     fn run(&self) -> io::Result<thread::JoinHandle<io::Result<()>>> {
-        // Get relative paths under `src` and `dst`.
-        // Absolute paths under `src` and `dst` never match, so compare the two
-        // trees by relative paths, i.e. by each file's path relative to its root.
-        let src_rel = relative_paths(&self.src, &collect_files(&self.src)?);
-        let dst_rel = relative_paths(&self.dst, &collect_files(&self.dst)?);
-
-        // Get files to copy from `src_rel` and `dst_rel`.
-        let files_to_copy: Vec<PathBuf> = (&src_rel - &dst_rel).into_iter().collect();
+        // Determine which files to copy.
+        let files_to_copy = self.compute_files_to_copy()?;
         if files_to_copy.is_empty() {
-            warn!(
+            info!(
                 "Task \"{}\": nothing to copy from \"{}\" (destination is up to date)",
                 self.name,
                 self.src.display()
@@ -172,5 +168,55 @@ impl Task {
         Ok(thread::spawn(move || {
             copy_file_list(&src, &dst, &files_to_copy)
         }))
+    }
+    /// Compute the relative paths of every source file that must be copied to
+    /// make `dst` mirror `src`.
+    ///
+    /// A file is copied when it is missing under `dst`, or when its destination
+    /// copy differs from the source (compared by size first, then by content).
+    /// The source file always overwrites the destination. Files that exist only
+    /// under `dst` are left untouched.
+    fn compute_files_to_copy(&self) -> io::Result<Vec<PathBuf>> {
+        let src_files = collect_files(&self.src)?;
+        let dst_files = collect_files(&self.dst)?;
+
+        let mut to_copy = Vec::new();
+        for src_path in src_files {
+            // Every collected path is under `src`, so this cannot fail.
+            let rel = src_path
+                .strip_prefix(&self.src)
+                .expect("collected path is not under the source root")
+                .to_path_buf();
+            let dst_path = self.dst.join(&rel);
+
+            // Copy when the destination is missing the file, or when the
+            // existing destination copy differs from the source (size, then
+            // content).
+            if !dst_files.contains(&dst_path) {
+                debug!(
+                    "Task \"{}\": \"{}\" is missing from \"{}\"",
+                    self.name,
+                    rel.display(),
+                    self.dst.display()
+                );
+                to_copy.push(rel);
+            } else if files_differ(&src_path, &dst_path)? {
+                debug!(
+                    "Task \"{}\": \"{}\" differs from its copy in \"{}\"",
+                    self.name,
+                    rel.display(),
+                    self.dst.display()
+                );
+                to_copy.push(rel);
+            }
+        }
+
+        debug!(
+            "Task \"{}\": {} file(s) need to be copied",
+            self.name,
+            to_copy.len()
+        );
+
+        Ok(to_copy)
     }
 }
