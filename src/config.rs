@@ -60,14 +60,24 @@ impl TasksList {
             fs::write(config_path, "")?;
         }
 
-        // Read and parse the config file, replacing the current contents.
+        // Read and parse the config file.
         let content = fs::read_to_string(config_path)?;
-        *self = toml::from_str(&content).map_err(|e| {
+        let parsed: TasksList = toml::from_str(&content).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Failed to parse {}: {e}", config_path.display()),
             )
         })?;
+
+        // Reject invalid tasks (relative or nested/identical paths) before
+        // committing them, so a bad config never replaces a previously-loaded
+        // one.
+        for task in &parsed.tasks {
+            task._validate()?;
+        }
+
+        // Commit the parsed, validated tasks.
+        *self = parsed;
 
         info!(
             "Loaded {} task(s) from \"{}\"",
@@ -237,6 +247,58 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_from_rejects_relative_path() {
+        let dir = temp_dir("rejects_relative_path");
+        let config_path = dir.join("tasks.toml");
+
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            &config_path,
+            r#"
+                [[tasks]]
+                name = "photos"
+                src = "photos"
+                dst = "/backup/photos"
+            "#,
+        )
+        .unwrap();
+
+        let mut list = TasksList::default();
+        let result = list.load_from(&config_path);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_from_rejects_nested_paths() {
+        let dir = temp_dir("rejects_nested_paths");
+        let config_path = dir.join("tasks.toml");
+
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            &config_path,
+            r#"
+                [[tasks]]
+                name = "photos"
+                src = "/home/user/photos"
+                dst = "/home/user/photos/backup"
+            "#,
+        )
+        .unwrap();
+
+        let mut list = TasksList::default();
+        let result = list.load_from(&config_path);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
 
         fs::remove_dir_all(&dir).unwrap();
     }
