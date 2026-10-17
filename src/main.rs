@@ -23,8 +23,9 @@ fn init_file_logger() -> std::io::Result<()> {
         .truncate(true)
         .open(dir.join("app.log"))?;
 
-    env_logger::Builder::from_default_env()
+    env_logger::Builder::new()
         .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
         .target(env_logger::Target::Pipe(Box::new(file)))
         .init();
 

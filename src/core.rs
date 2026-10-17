@@ -93,7 +93,7 @@ fn files_differ(file_a: &Path, file_b: &Path) -> io::Result<bool> {
 
         // Both readers are exhausted (sizes were equal and the same number
         // of bytes were consumed from each), so the files are identical.
-        if n == 0 { 
+        if n == 0 {
             return Ok(false);
         }
         if buf_a[..n] != buf_b[..n] {
