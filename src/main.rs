@@ -65,14 +65,16 @@ fn main() {
     let (handles, startup_errors) = core::run_tasks_list(&tasks_list, &progress);
     let mut copy_errors = Vec::new();
     let mut thread_panics = Vec::new();
+    let mut failed_files = Vec::new();
 
     // Wait for every task thread and tally the results.
     let mut succeeded = 0u32;
     let mut failed = 0u32;
     for handle in handles {
         match handle.join() {
-            Ok(Ok(())) => {
+            Ok(Ok(failures)) => {
                 // The thread finished and the internal logic executed successfully.
+                failed_files.extend(failures);
                 succeeded += 1;
             }
             Ok(Err(e)) => {
@@ -101,6 +103,12 @@ fn main() {
         error!("Thread panicked: {panic:?}");
         eprintln!("Thread panicked: {panic:?}");
         failed += 1;
+    }
+
+    // Files that failed to copy are reported individually, but the task that
+    // owned them still counts as succeeded.
+    for (failed_file, error_message) in failed_files {
+        eprintln!("Failed to copy file \"{:?}\": {error_message}", failed_file)
     }
 
     // Clear the progress bars so the final summary prints on a clean line.

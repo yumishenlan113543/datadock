@@ -11,11 +11,17 @@ use tempfile::NamedTempFile;
 
 use crate::config::TasksList;
 
+/// The list of files that failed to copy, each paired with the error message
+/// explaining why the copy failed.
+type FailedFiles = Vec<(PathBuf, String)>;
+
 /// Schedule every task in `tasks_list` on its own background thread and return
 /// the [`thread::JoinHandle`]s so the caller can wait for them to finish.
 ///
-/// Each task registers its own [`ProgressBar`] under `mp`, which the caller
-/// owns and uses to render the whole set of bars together.
+/// Each handle resolves to a `(path, error message)` pair for each file that
+/// failed to copy for that task. Each task registers its own [`ProgressBar`]
+/// under `mp`, which the caller owns and uses to render the whole set of bars
+/// together.
 ///
 /// A task that fails to be scheduled (e.g. its source directory cannot be
 /// scanned) is collected into the returned error list and skipped; the
@@ -23,7 +29,10 @@ use crate::config::TasksList;
 pub fn run_tasks_list(
     tasks_list: &TasksList,
     mp: &MultiProgress,
-) -> (Vec<thread::JoinHandle<io::Result<()>>>, Vec<io::Error>) {
+) -> (
+    Vec<thread::JoinHandle<io::Result<FailedFiles>>>,
+    Vec<io::Error>,
+) {
     let mut join_handles = Vec::new();
     let mut errors = Vec::new();
 
@@ -118,18 +127,25 @@ fn files_differ(file_a: &Path, file_b: &Path) -> io::Result<bool> {
 /// `src` and `size` is the file's length in bytes. Parent directories are
 /// created as needed, and each file's target path is `dst` joined with its
 /// relative path. Progress is reported to `bar` in bytes.
+///
+/// A file that fails to copy is skipped (its existing destination, if any, is
+/// left intact) and its absolute source path and error message are collected;
+/// the remaining files are still copied. The returned list holds a
+/// `(path, error message)` pair for each failure, so a single copy error does
+/// not abort the whole task.
 fn copy_file_list(
     src: &Path,
     dst: &Path,
     files: &[(PathBuf, u64)],
     bar: &ProgressBar,
-) -> io::Result<()> {
+) -> io::Result<FailedFiles> {
     info!(
         "Copying {} file(s) from \"{}\" to \"{}\"",
         files.len(),
         src.display(),
         dst.display()
     );
+    let mut failures = Vec::new();
 
     for (rel, _size) in files {
         // Source path = src / relative path, target = dst / relative path.
@@ -153,27 +169,19 @@ fn copy_file_list(
                 .unwrap_or_else(|| rel.display().to_string()),
         );
         if let Err(error) = copy_file_stream(&src_path, &target, bar) {
-            // The file failed to copy: skip it and cancel the whole task. The
-            // copy is written to a temporary file and only moved into place on
-            // success, so an existing destination is left intact.
-            warn!("Failed to copy \"{}\": {error}; skipping it", rel.display());
-            // Mark the bar as failed (rather than finishing it) so the failure
-            // stays visible in the progress output.
-            bar.set_style(
-                ProgressStyle::with_template(
-                    "{prefix} [{elapsed_precise}] {bar:40.red} {bytes}/{total_bytes} {msg}",
-                )
-                .expect("valid progress bar template"),
-            );
-            bar.set_message(format!("failed: {error}").to_string());
-            // Cancel the whole task: stop copying the remaining files.
-            return Err(error);
+            // The file failed to copy: record it and continue with the rest.
+            // The copy is written to a temporary file and only moved into
+            // place on success, so an existing destination is left intact.
+            let abs = src.join(rel);
+            warn!("Failed to copy \"{}\": {error}; skipping it", abs.display());
+            // Push the failed file path and its error message to `failures`.
+            failures.push((abs, error.to_string()));
         }
     }
 
     bar.finish();
     info!("Finished copying to \"{}\"", dst.display());
-    Ok(())
+    Ok(failures)
 }
 
 /// Copy a single file from `src` to `dst` in fixed-size chunks, reporting each
@@ -281,11 +289,12 @@ impl Task {
     /// background thread to copy them while reporting progress to a bar
     /// registered under `mp`.
     ///
-    /// Returns the thread's [`thread::JoinHandle`], or an error if the source
-    /// or destination directory cannot be scanned. It is normal for this to
-    /// error when either `src` or `dst` does not exist, so such a task
-    /// simply fails to start, not fails during running.
-    fn run(&self, mp: &MultiProgress) -> io::Result<thread::JoinHandle<io::Result<()>>> {
+    /// Returns the thread's [`thread::JoinHandle`], which resolves to a
+    /// `(path, error message)` pair for each file that failed to copy, or an
+    /// error if the source or destination directory cannot be scanned. It is
+    /// normal for this to error when either `src` or `dst` does not exist, so
+    /// such a task simply fails to start, not fails during running.
+    fn run(&self, mp: &MultiProgress) -> io::Result<thread::JoinHandle<io::Result<FailedFiles>>> {
         // Determine which files to copy.
         let files_to_copy = self.compute_files_to_copy()?;
         if files_to_copy.is_empty() {
@@ -649,24 +658,30 @@ mod tests {
     }
 
     #[test]
-    fn copy_file_list_marks_bar_failed_on_error() {
+    fn copy_file_list_records_failed_files_and_continues() {
         let dir = temp_dir("copy_list_fail");
         let src = dir.join("src");
         let dst = dir.join("dst");
         write_file(&src.join("good.txt"), b"ok");
         fs::create_dir_all(&dst).unwrap();
 
-        // The second entry's source does not exist, so the copy fails partway.
+        // The second entry's source does not exist, so that copy fails, but the
+        // remaining files are still copied and the bar is finished normally.
         let files = vec![
             (PathBuf::from("good.txt"), 2),
             (PathBuf::from("missing.txt"), 0),
         ];
         let bar = hidden_bar();
-        let result = copy_file_list(&src, &dst, &files, &bar);
+        let failures = copy_file_list(&src, &dst, &files, &bar).unwrap();
 
-        assert!(result.is_err());
-        assert!(!bar.is_finished());
-        assert!(bar.message().contains("failed"));
+        // The good file is copied and the missing one is recorded as a failure
+        // together with its error message.
+        assert_eq!(fs::read(dst.join("good.txt")).unwrap(), b"ok");
+        assert_eq!(failures.len(), 1);
+        let (failed_path, error_message) = &failures[0];
+        assert_eq!(failed_path, &src.join("missing.txt"));
+        assert!(!error_message.is_empty());
+        assert!(bar.is_finished());
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -686,9 +701,14 @@ mod tests {
 
         let files = vec![(PathBuf::from("adir"), 0)];
         let bar = hidden_bar();
-        let result = copy_file_list(&src, &dst, &files, &bar);
+        let failures = copy_file_list(&src, &dst, &files, &bar).unwrap();
 
-        assert!(result.is_err());
+        // The failed copy is recorded (path and error message), and the
+        // existing destination is intact.
+        assert_eq!(failures.len(), 1);
+        let (failed_path, error_message) = &failures[0];
+        assert_eq!(failed_path, &src.join("adir"));
+        assert!(!error_message.is_empty());
         assert_eq!(fs::read(dst.join("adir")).unwrap(), b"original");
 
         fs::remove_dir_all(&dir).unwrap();

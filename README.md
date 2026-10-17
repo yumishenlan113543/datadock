@@ -143,6 +143,7 @@ Note that a missing `src` or `dst` does **not** stop the other tasks from runnin
 - A file is copied when it is **missing** under `dst`, or when its `dst` copy **differs** from `src`.
 - "Differs" is decided cheaply: sizes are compared first, and only when sizes are equal are the contents compared in fixed-size chunks (so large files are never loaded fully into memory).
 - Files that exist **only** in `dst` are left untouched — `datadock` never deletes anything from the destination.
+- If a file **fails** to copy, it is reported to the console and skipped; the remaining files in the task are still copied.
 
 ### Symlinks
 
