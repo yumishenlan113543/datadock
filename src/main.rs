@@ -62,7 +62,9 @@ fn main() {
     // Run the tasks.
     println!("Running the tasks...");
     let progress = MultiProgress::new();
-    let (handles, errors) = core::run_tasks_list(&tasks_list, &progress);
+    let (handles, startup_errors) = core::run_tasks_list(&tasks_list, &progress);
+    let mut copy_errors = Vec::new();
+    let mut thread_panics = Vec::new();
 
     // Wait for every task thread and tally the results.
     let mut succeeded = 0u32;
@@ -75,18 +77,29 @@ fn main() {
             }
             Ok(Err(e)) => {
                 // The thread finished but the internal logic failed.
-                error!("Task error during copying: {e}");
-                failed += 1;
+                copy_errors.push(e);
             }
             Err(e) => {
                 // The thread panicked.
-                error!("Thread panicked: {e:?}");
-                failed += 1;
+                thread_panics.push(e);
             }
         }
     }
-    for error in errors {
+
+    // Handle task errors.
+    for error in startup_errors {
         error!("Task error at startup: {error}");
+        eprintln!("Task error at startup: {error}");
+        failed += 1;
+    }
+    for error in copy_errors {
+        error!("Task error during copying: {error}");
+        eprintln!("Task error during copying: {error}");
+        failed += 1;
+    }
+    for panic in thread_panics {
+        error!("Thread panicked: {panic:?}");
+        eprintln!("Thread panicked: {panic:?}");
         failed += 1;
     }
 
