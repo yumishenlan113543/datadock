@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use serde::Deserialize;
+use tempfile::NamedTempFile;
 
 use crate::config::TasksList;
 
@@ -151,7 +152,23 @@ fn copy_file_list(
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| rel.display().to_string()),
         );
-        copy_file_stream(&src_path, &target, bar)?;
+        if let Err(error) = copy_file_stream(&src_path, &target, bar) {
+            // The file failed to copy: skip it and cancel the whole task. The
+            // copy is written to a temporary file and only moved into place on
+            // success, so an existing destination is left intact.
+            warn!("Failed to copy \"{}\": {error}; skipping it", rel.display());
+            // Mark the bar as failed (rather than finishing it) so the failure
+            // stays visible in the progress output.
+            bar.set_style(
+                ProgressStyle::with_template(
+                    "{prefix} [{elapsed_precise}] {bar:40.red} {bytes}/{total_bytes} {msg}",
+                )
+                .expect("valid progress bar template"),
+            );
+            bar.set_message(format!("failed: {error}").to_string());
+            // Cancel the whole task: stop copying the remaining files.
+            return Err(error);
+        }
     }
 
     bar.finish();
@@ -164,9 +181,17 @@ fn copy_file_list(
 ///
 /// Unlike `fs::copy`, this streams the file so progress can be measured, and it
 /// preserves the source file's permission bits to match `fs::copy`'s behavior.
+///
+/// The copy is written to a temporary file in the destination directory and
+/// atomically renamed into place only on success, so a failed copy never
+/// truncates or corrupts an existing destination file.
 fn copy_file_stream(src: &Path, dst: &Path, bar: &ProgressBar) -> io::Result<()> {
     let mut reader = BufReader::new(fs::File::open(src)?);
-    let mut writer = BufWriter::new(fs::File::create(dst)?);
+
+    // The temporary file lives next to `dst` (same directory) so the final
+    // rename is atomic; it is removed automatically if anything goes wrong.
+    let parent = dst.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp = NamedTempFile::new_in(parent)?;
     let mut buf = [0u8; 64 * 1024];
 
     loop {
@@ -174,15 +199,16 @@ fn copy_file_stream(src: &Path, dst: &Path, bar: &ProgressBar) -> io::Result<()>
         if n == 0 {
             break;
         }
-        writer.write_all(&buf[..n])?;
+        tmp.write_all(&buf[..n])?;
         bar.inc(n as u64);
     }
 
-    writer.flush()?;
-    drop(writer);
+    // `fs::copy` also copies the permission bits; mirror that here (on the
+    // temporary file, before it is moved into place).
+    fs::set_permissions(tmp.path(), fs::metadata(src)?.permissions())?;
 
-    // `fs::copy` also copies the permission bits; mirror that here.
-    fs::set_permissions(dst, fs::metadata(src)?.permissions())?;
+    // Atomically replace `dst` with the fully-written temporary file.
+    tmp.persist(dst).map_err(|e| e.error)?;
 
     Ok(())
 }
@@ -283,7 +309,7 @@ impl Task {
         let bar = mp.add(ProgressBar::new(total_bytes));
         bar.set_style(
             ProgressStyle::with_template(
-                "{prefix} [{elapsed_precise} / {eta}] {bar:40.cyan/blue} {bytes}/{total_bytes} {msg}",
+                "{prefix} [{elapsed_precise}/{eta}] {bar:40.cyan/blue} {bytes}/{total_bytes} {msg}",
             )
             .expect("valid progress bar template"),
         );
@@ -581,6 +607,27 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn copy_file_stream_preserves_existing_destination_on_failure() {
+        let dir = temp_dir("copy_stream_preserve");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        // A directory passed as a "file" opens successfully on Unix but fails
+        // on read (EISDIR), after the temporary file has been created.
+        fs::create_dir_all(src.join("adir")).unwrap();
+        // A pre-existing destination that must survive the failed copy intact.
+        write_file(&dst, b"original");
+
+        let bar = hidden_bar();
+        let result = copy_file_stream(&src.join("adir"), &dst, &bar);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&dst).unwrap(), b"original");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn copy_file_list_preserves_relative_structure() {
         let dir = temp_dir("copy_list");
@@ -597,6 +644,52 @@ mod tests {
 
         assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"a");
         assert_eq!(fs::read(dst.join("sub").join("b.txt")).unwrap(), b"b");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn copy_file_list_marks_bar_failed_on_error() {
+        let dir = temp_dir("copy_list_fail");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        write_file(&src.join("good.txt"), b"ok");
+        fs::create_dir_all(&dst).unwrap();
+
+        // The second entry's source does not exist, so the copy fails partway.
+        let files = vec![
+            (PathBuf::from("good.txt"), 2),
+            (PathBuf::from("missing.txt"), 0),
+        ];
+        let bar = hidden_bar();
+        let result = copy_file_list(&src, &dst, &files, &bar);
+
+        assert!(result.is_err());
+        assert!(!bar.is_finished());
+        assert!(bar.message().contains("failed"));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_file_list_preserves_destination_on_failed_copy() {
+        let dir = temp_dir("copy_list_preserve");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        // A directory passed as a "file" opens successfully on Unix but fails
+        // on read (EISDIR), after the temporary file has been created.
+        fs::create_dir_all(src.join("adir")).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        // A pre-existing destination that must survive the failed copy intact.
+        write_file(&dst.join("adir"), b"original");
+
+        let files = vec![(PathBuf::from("adir"), 0)];
+        let bar = hidden_bar();
+        let result = copy_file_list(&src, &dst, &files, &bar);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(dst.join("adir")).unwrap(), b"original");
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -693,25 +786,41 @@ mod tests {
 
     #[test]
     fn validate_rejects_identical_paths() {
-        let t = task("t", Path::new("/home/user/photos"), Path::new("/home/user/photos"));
+        let t = task(
+            "t",
+            Path::new("/home/user/photos"),
+            Path::new("/home/user/photos"),
+        );
         assert!(t._validate().is_err());
     }
 
     #[test]
     fn validate_rejects_dst_nested_in_src() {
-        let t = task("t", Path::new("/home/user/photos"), Path::new("/home/user/photos/backup"));
+        let t = task(
+            "t",
+            Path::new("/home/user/photos"),
+            Path::new("/home/user/photos/backup"),
+        );
         assert!(t._validate().is_err());
     }
 
     #[test]
     fn validate_rejects_src_nested_in_dst() {
-        let t = task("t", Path::new("/home/user/photos/sub"), Path::new("/home/user/photos"));
+        let t = task(
+            "t",
+            Path::new("/home/user/photos/sub"),
+            Path::new("/home/user/photos"),
+        );
         assert!(t._validate().is_err());
     }
 
     #[test]
     fn validate_accepts_sibling_paths() {
-        let t = task("t", Path::new("/home/user/photos"), Path::new("/backup/photos"));
+        let t = task(
+            "t",
+            Path::new("/home/user/photos"),
+            Path::new("/backup/photos"),
+        );
         assert!(t._validate().is_ok());
     }
 
