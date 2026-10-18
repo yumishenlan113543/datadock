@@ -123,9 +123,9 @@ For each task, `datadock`:
 
 **A task only starts when both `src` and `dst` already exist. This is by design.**
 
-If either the source directory or the destination directory is missing, the task **fails to start** (it is reported as a startup error) rather than running. `datadock` intentionally does **not** create the destination root directory for you.
+If either the source directory or the destination directory is missing, the task is **skipped** (a message is printed to the console and the log) rather than run. `datadock` intentionally does **not** create the destination root directory for you, and a skipped task is **not** counted as a failure.
 
-> Why: `src` or `dst` is often a removable drive (an external disk, USB stick, or SD card) that is not always connected or mounted. `datadock` requires both directories to be present before starting so a backup is never silently skipped just because a drive happened to be unplugged — the missing drive is instead surfaced as a visible startup error, prompting you to plug it in.
+> Why: `src` or `dst` is often a removable drive (an external disk, USB stick, or SD card) that is not always connected or mounted. `datadock` requires both directories to be present before starting so a backup is never silently missed — a missing drive is instead surfaced as a visible "skipping" message, prompting you to plug it in.
 
 So, before running a task, make sure both directories exist (for example, mount the removable drive you pointed `src` or `dst` at). The destination can be empty — `datadock` will create any *sub*directories it needs while copying — but the destination root itself must be present:
 
@@ -134,7 +134,7 @@ mkdir -p /mnt/backup/Pictures   # destination root must exist
 datadock                        # source /home/user/Pictures must also exist
 ```
 
-Note that a missing `src` or `dst` does **not** stop the other tasks from running: each task is independent, and a task that cannot start is skipped while the remaining tasks continue.
+Note that a missing `src` or `dst` does **not** stop the other tasks from running: each task is independent, and a task whose directories are missing is skipped (and not counted in the final summary) while the remaining tasks continue.
 
 ### What gets copied
 
@@ -161,7 +161,7 @@ Each task runs on its own background thread, and progress bars for all tasks are
 datadock
 ```
 
-The program loads `tasks.toml`, prints a short summary to the console (`Run finished: N succeeded, M failed.`), and writes detailed logs to a file (see [Logging](#logging)). Exit code `1` is returned when the config file fails to load or parse.
+The program loads `tasks.toml`, prints a short summary to the console (`Run finished: N succeeded, M failed.`), and writes detailed logs to a file (see [Logging](#logging)). Tasks skipped because `src` or `dst` is missing are not counted in the summary. Exit code `1` is returned when the config file fails to load or parse.
 
 ---
 

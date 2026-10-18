@@ -51,6 +51,10 @@ fn main() {
         std::process::exit(1);
     });
     info!("Successfully loaded {} task(s)", tasks_list.tasks.len());
+    println!("Successfully loaded {} task(s)", tasks_list.tasks.len());
+
+    // Print a blank line.
+    println!("");
 
     // Nothing to do when no tasks are defined.
     if tasks_list.tasks.is_empty() {
@@ -113,6 +117,9 @@ fn main() {
 
     // Clear the progress bars so the final summary prints on a clean line.
     let _ = progress.clear();
+
+    // Print a blank line.
+    println!("\n");
 
     info!("Run finished: {succeeded} succeeded, {failed} failed.");
     println!("Run finished: {succeeded} succeeded, {failed} failed.");

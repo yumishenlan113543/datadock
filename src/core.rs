@@ -23,8 +23,9 @@ type FailedFiles = Vec<(PathBuf, String)>;
 /// under `mp`, which the caller owns and uses to render the whole set of bars
 /// together.
 ///
-/// A task that fails to be scheduled (e.g. its source directory cannot be
-/// scanned) is collected into the returned error list and skipped; the
+/// A task whose source or destination directory is missing is skipped (with a
+/// message) rather than scheduled. A task that fails to be scheduled for any
+/// other reason is collected into the returned error list. In both cases the
 /// remaining tasks still run.
 pub fn run_tasks_list(
     tasks_list: &TasksList,
@@ -37,16 +38,28 @@ pub fn run_tasks_list(
     let mut errors = Vec::new();
 
     for task in &tasks_list.tasks {
-        info!("Starting task \"{}\"", task.name);
-        match task.run(mp) {
-            Ok(join_handle) => {
-                join_handles.push(join_handle);
-                info!("Task \"{}\" scheduled on a background thread", task.name);
+        if task.directories_exist() {
+            info!("Starting task \"{}\"", task.name);
+            let _ = mp.println(format!("Starting task \"{}\"", task.name));
+            match task.run(mp) {
+                Ok(join_handle) => {
+                    join_handles.push(join_handle);
+                    info!("Task \"{}\" scheduled on a background thread", task.name);
+                }
+                Err(e) => {
+                    warn!("Task \"{}\" failed to start: {e}", task.name);
+                    errors.push(e);
+                }
             }
-            Err(e) => {
-                warn!("Task \"{}\" failed to start: {e}", task.name);
-                errors.push(e);
-            }
+        } else {
+            info!(
+                "At least one folder for task \"{}\" doesn't exist, skipping...",
+                task.name
+            );
+            let _ = mp.println(format!(
+                "At least one folder for task \"{}\" doesn't exist, skipping...",
+                task.name
+            ));
         }
     }
 
@@ -284,6 +297,15 @@ impl Task {
 
         Ok(())
     }
+    /// Return whether both the source and destination directories exist on
+    /// disk.
+    ///
+    /// A task is only run when both exist, so [`run_tasks_list`] skips a task
+    /// whose directories are missing (e.g. a removable drive that isn't
+    /// mounted) instead of scheduling it.
+    fn directories_exist(&self) -> bool {
+        self.src.exists() && self.dst.exists()
+    }
     /// Compute the files under `src` that are missing from `dst` or whose
     /// `dst` differ from the corresponding files in `src`, then spawn a
     /// background thread to copy them while reporting progress to a bar
@@ -291,9 +313,9 @@ impl Task {
     ///
     /// Returns the thread's [`thread::JoinHandle`], which resolves to a
     /// `(path, error message)` pair for each file that failed to copy, or an
-    /// error if the source or destination directory cannot be scanned. It is
-    /// normal for this to error when either `src` or `dst` does not exist, so
-    /// such a task simply fails to start, not fails during running.
+    /// error if the source or destination directory cannot be scanned. Callers
+    /// normally check [`Task::directories_exist`] first, so this runs only when
+    /// both directories are present.
     fn run(&self, mp: &MultiProgress) -> io::Result<thread::JoinHandle<io::Result<FailedFiles>>> {
         // Determine which files to copy.
         let files_to_copy = self.compute_files_to_copy()?;
@@ -342,6 +364,8 @@ impl Task {
     /// under `dst` are left untouched. Each returned entry is a `(relative
     /// path, size in bytes)` pair.
     fn compute_files_to_copy(&self) -> io::Result<Vec<(PathBuf, u64)>> {
+        info!("Computing files in task \"{}\" to copy...", self.name);
+
         let src_files = collect_files(&self.src)?;
         let dst_files = collect_files(&self.dst)?;
 
@@ -845,6 +869,26 @@ mod tests {
     }
 
     #[test]
+    fn directories_exist_requires_both_directories() {
+        let dir = temp_dir("dirs_exist");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+
+        // Neither exists.
+        assert!(!task("t", &dir.join("other_src"), &dir.join("other_dst")).directories_exist());
+        // Only `src` exists.
+        assert!(!task("t", &src, &dir.join("other_dst")).directories_exist());
+        // Only `dst` exists.
+        assert!(!task("t", &dir.join("other_src"), &dst).directories_exist());
+        // Both exist.
+        assert!(task("t", &src, &dst).directories_exist());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn run_copies_files() {
         let dir = temp_dir("run_copies");
         let src = dir.join("src");
@@ -893,8 +937,8 @@ mod tests {
     }
 
     #[test]
-    fn run_tasks_list_collects_startup_errors() {
-        let dir = temp_dir("run_list_errors");
+    fn run_tasks_list_skips_tasks_with_missing_directories() {
+        let dir = temp_dir("run_list_skip");
         fs::create_dir_all(&dir).unwrap();
 
         let tasks = TasksList {
@@ -904,14 +948,16 @@ mod tests {
         let mp = hidden_multi_progress();
         let (handles, errors) = run_tasks_list(&tasks, &mp);
 
+        // A task whose source directory is missing is skipped, not reported as
+        // an error, so neither a handle nor a startup error is produced.
         assert!(handles.is_empty());
-        assert_eq!(errors.len(), 1);
+        assert!(errors.is_empty());
 
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn run_tasks_list_runs_remaining_tasks_after_failure() {
+    fn run_tasks_list_runs_remaining_tasks_when_one_is_skipped() {
         let dir = temp_dir("run_list_mixed");
         let good_src = dir.join("good_src");
         let good_dst = dir.join("good_dst");
@@ -920,7 +966,8 @@ mod tests {
 
         let tasks = TasksList {
             tasks: vec![
-                task("bad", &dir.join("missing"), &dir.join("dst")),
+                // This task's source directory is missing, so it is skipped.
+                task("skipped", &dir.join("missing"), &dir.join("dst")),
                 task("good", &good_src, &good_dst),
             ],
         };
@@ -928,7 +975,8 @@ mod tests {
         let mp = hidden_multi_progress();
         let (handles, errors) = run_tasks_list(&tasks, &mp);
 
-        assert_eq!(errors.len(), 1);
+        // The skipped task produces no error, and the remaining task still runs.
+        assert!(errors.is_empty());
         assert_eq!(handles.len(), 1);
         for handle in handles {
             handle.join().unwrap().unwrap();
