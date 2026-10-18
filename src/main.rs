@@ -1,9 +1,9 @@
 mod config;
 mod core;
 
-use config::TasksList;
 use indicatif::MultiProgress;
 use log::{error, info, warn};
+use terminal_size::{Width, terminal_size};
 
 /// Configure a file-only logger that writes to `app.log` in the platform user
 /// data directory (e.g. `~/.local/share/datadock/app.log` on Linux).
@@ -37,6 +37,16 @@ fn init_file_logger() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Prints a full-width horizontal divider using the '─' character.
+///
+/// Dynamically detects the terminal width, falling back to 80 columns if unavailable.
+fn print_divider() {
+    let width = terminal_size()
+        .map(|(Width(w), _)| w as usize)
+        .unwrap_or(80);
+    println!("{}", "─".repeat(width));
+}
+
 /// Load the configured tasks and run them, logging progress and results to the
 /// log file while printing a short summary to the console.
 fn main() {
@@ -45,7 +55,7 @@ fn main() {
 
     // Load the tasks list.
     println!("Loading the tasks...");
-    let tasks_list = TasksList::new().unwrap_or_else(|e| {
+    let tasks_list = config::TasksList::new().unwrap_or_else(|e| {
         error!("Failed to load tasks: {e}");
         eprintln!("Failed to load tasks: {e}");
         std::process::exit(1);
@@ -53,8 +63,8 @@ fn main() {
     info!("Successfully loaded {} task(s)", tasks_list.tasks.len());
     println!("Successfully loaded {} task(s)", tasks_list.tasks.len());
 
-    // Print a blank line.
-    println!("");
+    // Print a divider.
+    print_divider();
 
     // Nothing to do when no tasks are defined.
     if tasks_list.tasks.is_empty() {
@@ -118,8 +128,8 @@ fn main() {
     // Clear the progress bars so the final summary prints on a clean line.
     let _ = progress.clear();
 
-    // Print a blank line.
-    println!("\n");
+    // Print a divider.
+    print_divider();
 
     info!("Run finished: {succeeded} succeeded, {failed} failed.");
     println!("Run finished: {succeeded} succeeded, {failed} failed.");
