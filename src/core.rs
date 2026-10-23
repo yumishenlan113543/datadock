@@ -648,12 +648,12 @@ mod tests {
         let dst = dir.join("dst");
         // A directory passed as a "file" opens successfully on Unix but fails
         // on read (EISDIR), after the temporary file has been created.
-        fs::create_dir_all(src.join("adir")).unwrap();
+        fs::create_dir_all(src.join("dir_a")).unwrap();
         // A pre-existing destination that must survive the failed copy intact.
         write_file(&dst, b"original");
 
         let bar = hidden_bar();
-        let result = copy_file_stream(&src.join("adir"), &dst, &bar);
+        let result = copy_file_stream(&src.join("dir_a"), &dst, &bar);
 
         assert!(result.is_err());
         assert_eq!(fs::read(&dst).unwrap(), b"original");
@@ -718,12 +718,12 @@ mod tests {
         let dst = dir.join("dst");
         // A directory passed as a "file" opens successfully on Unix but fails
         // on read (EISDIR), after the temporary file has been created.
-        fs::create_dir_all(src.join("adir")).unwrap();
+        fs::create_dir_all(src.join("dir_a")).unwrap();
         fs::create_dir_all(&dst).unwrap();
         // A pre-existing destination that must survive the failed copy intact.
-        write_file(&dst.join("adir"), b"original");
+        write_file(&dst.join("dir_a"), b"original");
 
-        let files = vec![(PathBuf::from("adir"), 0)];
+        let files = vec![(PathBuf::from("dir_a"), 0)];
         let bar = hidden_bar();
         let failures = copy_file_list(&src, &dst, &files, &bar).unwrap();
 
@@ -731,9 +731,9 @@ mod tests {
         // existing destination is intact.
         assert_eq!(failures.len(), 1);
         let (failed_path, error_message) = &failures[0];
-        assert_eq!(failed_path, &src.join("adir"));
+        assert_eq!(failed_path, &src.join("dir_a"));
         assert!(!error_message.is_empty());
-        assert_eq!(fs::read(dst.join("adir")).unwrap(), b"original");
+        assert_eq!(fs::read(dst.join("dir_a")).unwrap(), b"original");
 
         fs::remove_dir_all(&dir).unwrap();
     }
