@@ -141,11 +141,13 @@ mod tests {
             name = "photos"
             src = "/home/user/photos"
             dst = "/backup/photos"
+            scan_contents = true
 
             [[tasks]]
             name = "docs"
             src = "/home/user/docs"
             dst = "/backup/docs"
+            scan_contents = false
         "#;
         let list: TasksList = toml::from_str(toml).unwrap();
         assert_eq!(list.tasks.len(), 2);
@@ -192,6 +194,7 @@ mod tests {
                 name = "photos"
                 src = "/home/user/photos"
                 dst = "/backup/photos"
+                scan_contents = true
             "#,
         )
         .unwrap();
@@ -217,6 +220,7 @@ mod tests {
                 name = "photos"
                 src = "/a"
                 dst = "/b"
+                scan_contents = true
             "#,
         )
         .unwrap();
@@ -252,6 +256,32 @@ mod tests {
     }
 
     #[test]
+    fn load_from_rejects_missing_scan_contents() {
+        let dir = temp_dir("rejects_missing_scan_contents");
+        let config_path = dir.join("tasks.toml");
+
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            &config_path,
+            r#"
+                [[tasks]]
+                name = "photos"
+                src = "/home/user/photos"
+                dst = "/backup/photos"
+            "#,
+        )
+        .unwrap();
+
+        let mut list = TasksList::default();
+        let result = list.load_from(&config_path);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn load_from_rejects_relative_path() {
         let dir = temp_dir("rejects_relative_path");
         let config_path = dir.join("tasks.toml");
@@ -264,6 +294,7 @@ mod tests {
                 name = "photos"
                 src = "photos"
                 dst = "/backup/photos"
+                scan_contents = true
             "#,
         )
         .unwrap();
@@ -290,6 +321,7 @@ mod tests {
                 name = "photos"
                 src = "/home/user/photos"
                 dst = "/home/user/photos/backup"
+                scan_contents = true
             "#,
         )
         .unwrap();
