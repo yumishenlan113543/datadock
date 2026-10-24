@@ -4,7 +4,8 @@
 
 Each backup job is called a **task**. Tasks are declared in a single TOML config file, and each task is run on its own background thread, with progress shown in the terminal and detailed logging written to a file.
 
-- **Incremental by default** — only files that are missing from the destination or that have changed (compared by size first, then by content) are copied.
+- **Incremental** — only files that are missing from the destination are copied, plus—when a task enables `scan_contents`—files that have changed (compared by size first, then by content).
+- **Ignore-aware** — hidden files and directories, plus files excluded by `.ignore`/`.gitignore` rules, are skipped during the scan.
 - **Mirrors, but never deletes** — files that exist only in the destination are left untouched. `datadock` never removes data from the destination.
 - **Safe copies** — each file is streamed to a temporary file in the destination and atomically renamed into place, so a failed copy never corrupts or truncates an existing file.
 
@@ -21,6 +22,7 @@ Each backup job is called a **task**. Tasks are declared in a single TOML config
 - [How a task works](#how-a-task-works)
   - [The destination must already exist](#the-destination-must-already-exist)
   - [What gets copied](#what-gets-copied)
+  - [Ignored and hidden files](#ignored-and-hidden-files)
   - [Symlinks](#symlinks)
   - [Concurrency](#concurrency)
 - [Running](#running)
@@ -75,18 +77,20 @@ The file is resolved through the platform's standard user-config directory (usin
 
 ### Format
 
-The file is TOML. At the top level it has a single `tasks` key, whose value is an **array of tables** (one table per task). A task has exactly three fields:
+The file is TOML. At the top level it has a single `tasks` key, whose value is an **array of tables** (one table per task). A task has exactly four fields:
 
 ```toml
 [[tasks]]
-name = "photos"
-src  = "/home/user/Pictures"
-dst  = "/mnt/backup/Pictures"
+name          = "photos"
+src           = "/home/user/Pictures"
+dst           = "/mnt/backup/Pictures"
+scan_contents = false
 
 [[tasks]]
-name = "documents"
-src  = "/home/user/Documents"
-dst  = "/mnt/backup/Documents"
+name          = "documents"
+src           = "/home/user/Documents"
+dst           = "/mnt/backup/Documents"
+scan_contents = true
 ```
 
 ### Fields
@@ -96,6 +100,7 @@ dst  = "/mnt/backup/Documents"
 | `name` | string | yes | A human-readable label for the task. Used in progress output and logs. |
 | `src` | string (path) | yes | The absolute source directory to copy **from**. |
 | `dst` | string (path) | yes | The absolute destination directory to copy **to**. |
+| `scan_contents` | boolean | yes | When `true`, files whose contents differ are copied over their destination copies. When `false`, only files missing from `dst` are copied; existing files are kept even if their contents differ. |
 
 ### Validation rules
 
@@ -115,8 +120,8 @@ If the config file cannot be parsed as TOML, `datadock` also reports an error an
 
 For each task, `datadock`:
 
-1. Recursively scans `src` and `dst` to build a list of regular files.
-2. Computes the files that must be copied: those missing from `dst`, plus those whose `dst` copy differs from `src`.
+1. Recursively scans `src` and `dst` to build a list of regular files. Hidden files and directories, as well as files excluded by ignore rules, are left out of the scan (see [Ignored and hidden files](#ignored-and-hidden-files)).
+2. Computes the files that must be copied: those missing from `dst`, plus—when `scan_contents` is `true`—those whose `dst` copy differs from `src`.
 3. Copies each such file to the matching relative location under `dst`, preserving the directory structure.
 
 ### The destination must already exist
@@ -140,14 +145,29 @@ Note that a missing `src` or `dst` does **not** stop the other tasks from runnin
 
 `datadock` is incremental and one-directional (source → destination):
 
-- A file is copied when it is **missing** under `dst`, or when its `dst` copy **differs** from `src`.
-- "Differs" is decided cheaply: sizes are compared first, and only when sizes are equal are the contents compared in fixed-size chunks (so large files are never loaded fully into memory).
+- A file is copied when it is **missing** under `dst`. When `scan_contents = true`, a file is also copied when its `dst` copy **differs** from `src`.
+- When `scan_contents = false`, an existing file under `dst` is left alone even if its contents differ from `src`; only its file name is considered.
+- When enabled, "differs" is decided cheaply: sizes are compared first, and only when sizes are equal are the contents compared in fixed-size chunks (so large files are never loaded fully into memory).
 - Files that exist **only** in `dst` are left untouched — `datadock` never deletes anything from the destination.
+- Hidden files and files excluded by ignore rules are not scanned, so they are never copied (see [Ignored and hidden files](#ignored-and-hidden-files)).
 - If a file **fails** to copy, it is reported to the console and skipped; the remaining files in the task are still copied.
+
+### Ignored and hidden files
+
+File discovery uses the [`ignore`](https://crates.io/crates/ignore) crate with its default settings, so a scan is not a plain "every file" walk:
+
+- Entries whose name starts with `.` (hidden files and directories) are skipped. This covers things such as `.git`, `.cache`, and `.env`.
+- `.ignore` files are always honored.
+- Inside a git repository (a directory containing `.git`), `.gitignore`, `.git/info/exclude`, and the user's global git ignore file are honored as well. A `.gitignore` outside a git repository has no effect.
+- The rules apply to both `src` and `dst`, and each directory is evaluated independently. A file ignored under `src` is not backed up. A file ignored under `dst` is treated as missing from the destination, so it may be copied over on the next run.
+
+Ignored entries are not errors; they are simply left out of the scan. If a file should be backed up, do not hide or ignore it. Entries that cannot be read are logged as warnings and skipped.
 
 ### Symlinks
 
-Symlinks are **not followed**. They are skipped during the scan and never copied.
+Directory symlinks are **not followed**: a symlink to a directory is skipped and its contents are not scanned.
+
+A symlink to a regular file is collected during the scan and copied as a regular file containing the target's contents; the result under `dst` is not a symlink. Broken symlinks, and symlinks to anything other than a regular file or directory, are skipped.
 
 ### Concurrency
 
