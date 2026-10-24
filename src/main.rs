@@ -8,8 +8,8 @@ use terminal_size::{Width, terminal_size};
 /// Configure a file-only logger that writes to `app.log` in the platform user
 /// data directory (e.g. `~/.local/share/datadock/app.log` on Linux).
 ///
-/// The log file is truncated at the start of each run. The level defaults to
-/// `Info` and can be overridden via the `RUST_LOG` environment variable.
+/// The log file is truncated each run. The level defaults to `Info` and can be
+/// overridden with `RUST_LOG`.
 fn init_file_logger() -> std::io::Result<()> {
     // Resolve the application's platform-specific directories.
     let dirs = directories::ProjectDirs::from("", "", env!("CARGO_CRATE_NAME"))
@@ -37,9 +37,8 @@ fn init_file_logger() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Prints a full-width horizontal divider using the '─' character.
-///
-/// Dynamically detects the terminal width, falling back to 80 columns if unavailable.
+/// Print a full-width divider, falling back to 80 columns if the terminal
+/// width is unavailable.
 fn print_divider() {
     let width = terminal_size()
         .map(|(Width(w), _)| w as usize)
@@ -48,7 +47,7 @@ fn print_divider() {
 }
 
 /// Load the configured tasks and run them, logging progress and results to the
-/// log file while printing a short summary to the console.
+/// log file and printing a summary to the console.
 fn main() {
     // Initialize the logger.
     init_file_logger().unwrap();

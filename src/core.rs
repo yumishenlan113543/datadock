@@ -12,22 +12,19 @@ use tempfile::NamedTempFile;
 
 use crate::config::TasksList;
 
-/// The list of files that failed to copy, each paired with the error message
-/// explaining why the copy failed.
+/// The files that failed to copy, each paired with its error message.
 type FailedFiles = Vec<(PathBuf, String)>;
 
-/// Schedule every task in `tasks_list` on its own background thread and return
-/// the [`thread::JoinHandle`]s so the caller can wait for them to finish.
+/// Schedule every task on its own background thread and return the
+/// [`thread::JoinHandle`]s so the caller can wait for them to finish.
 ///
 /// Each handle resolves to a `(path, error message)` pair for each file that
-/// failed to copy for that task. Each task registers its own [`ProgressBar`]
-/// under `mp`, which the caller owns and uses to render the whole set of bars
-/// together.
+/// failed to copy. Each task registers its own [`ProgressBar`] under `mp`, which
+/// the caller uses to render all bars together.
 ///
-/// A task whose source or destination directory is missing is skipped (with a
-/// message) rather than scheduled. A task that fails to be scheduled for any
-/// other reason is collected into the returned error list. In both cases the
-/// remaining tasks still run.
+/// A task whose source or destination directory is missing is skipped with a
+/// message; any other scheduling failure is collected into the returned error
+/// list. The remaining tasks still run.
 pub fn run_tasks_list(
     tasks_list: &TasksList,
     mp: &MultiProgress,
@@ -67,17 +64,16 @@ pub fn run_tasks_list(
     (join_handles, errors)
 }
 
-/// Recursively collect every regular file under `root` into a set of paths.
+/// Recursively collect every regular file under `root`.
 ///
-/// Discovery uses the `ignore` crate with its default settings: hidden entries
-/// (names starting with `.`) are skipped, and ignore files (`.ignore`,
-/// `.gitignore`, `.git/info/exclude`, and the global git ignore) are honored,
-/// with git-related rules only applying inside a repository. Directory symlinks
-/// are not followed, though a symlink to a regular file is collected as a file.
-/// Any other entry type (socket, FIFO, etc.) is skipped.
+/// Discovery uses the `ignore` crate with default settings: hidden entries and
+/// ignored files (`.ignore`, `.gitignore`, `.git/info/exclude`, and the global
+/// git ignore) are skipped, with git rules only applying inside a repository.
+/// Directory symlinks are not followed, but a symlink to a regular file is
+/// collected. Other entry types are skipped.
 ///
-/// An entry that cannot be read is logged and skipped, and a missing `root`
-/// simply yields an empty set rather than an error.
+/// Unreadable entries are logged and skipped, and a missing `root` yields an
+/// empty set rather than an error.
 fn collect_files(root: &Path) -> io::Result<HashSet<PathBuf>> {
     let mut files = HashSet::new();
 
@@ -106,11 +102,10 @@ fn collect_files(root: &Path) -> io::Result<HashSet<PathBuf>> {
     Ok(files)
 }
 
-/// Compare `file_a` and `file_b`, returning `Ok(true)` when the files differ.
+/// Compare `file_a` and `file_b`, returning `Ok(true)` when they differ.
 ///
-/// The comparison is done by file size first (a cheap check) and falls back to
-/// comparing the file contents in fixed-size chunks only when the sizes are
-/// equal, so large files are not loaded fully into memory.
+/// Sizes are compared first, then contents in fixed-size chunks only when the
+/// sizes match, so large files are not fully loaded into memory.
 fn files_differ(file_a: &Path, file_b: &Path) -> io::Result<bool> {
     // Compare sizes first: a cheap way to reject most changed files without
     // reading their contents.
@@ -141,19 +136,16 @@ fn files_differ(file_a: &Path, file_b: &Path) -> io::Result<bool> {
     }
 }
 
-/// Copy every file in `files` from under `src` to the matching location under
+/// Copy every file in `files` from under `src` to the matching path under
 /// `dst`, preserving the relative directory structure.
 ///
-/// Each entry in `files` is a `(path, size)` pair where `path` is relative to
-/// `src` and `size` is the file's length in bytes. Parent directories are
-/// created as needed, and each file's target path is `dst` joined with its
-/// relative path. Progress is reported to `bar` in bytes.
+/// Each entry is a `(path, size)` pair, where `path` is relative to `src`.
+/// Parent directories are created as needed, and progress is reported to `bar`
+/// in bytes.
 ///
-/// A file that fails to copy is skipped (its existing destination, if any, is
-/// left intact) and its absolute source path and error message are collected;
-/// the remaining files are still copied. The returned list holds a
-/// `(path, error message)` pair for each failure, so a single copy error does
-/// not abort the whole task.
+/// A file that fails to copy is skipped (any existing destination is left
+/// intact) and its absolute source path and error message are collected; the
+/// remaining files are still copied.
 fn copy_file_list(
     src: &Path,
     dst: &Path,
@@ -209,11 +201,10 @@ fn copy_file_list(
 /// chunk's byte count to `bar`.
 ///
 /// Unlike `fs::copy`, this streams the file so progress can be measured, and it
-/// preserves the source file's permission bits to match `fs::copy`'s behavior.
+/// preserves the source file's permission bits.
 ///
-/// The copy is written to a temporary file in the destination directory and
-/// atomically renamed into place only on success, so a failed copy never
-/// truncates or corrupts an existing destination file.
+/// The copy is written to a temporary file and atomically renamed into place on
+/// success, so a failed copy never truncates an existing destination.
 fn copy_file_stream(src: &Path, dst: &Path, bar: &ProgressBar) -> io::Result<()> {
     let mut reader = BufReader::new(fs::File::open(src)?);
 
@@ -242,11 +233,10 @@ fn copy_file_stream(src: &Path, dst: &Path, bar: &ProgressBar) -> io::Result<()>
     Ok(())
 }
 
-/// A single backup/copy task, deserialized directly from a `tasks.toml` entry.
+/// A single backup/copy task, deserialized from a `tasks.toml` entry.
 ///
-/// This encapsulates the behavior of a single task (scanning and copying its
-/// files), so it lives here in `core.rs` rather than with the config types in
-/// `config.rs`.
+/// The task behavior (scanning and copying files) lives here in `core.rs`
+/// rather than with the config types in `config.rs`.
 #[derive(Debug, Deserialize)]
 pub struct Task {
     /// Human-readable name of the task.
@@ -257,10 +247,9 @@ pub struct Task {
     dst: PathBuf,
     /// Whether to compare file contents when deciding what to copy.
     ///
-    /// When `true`, a file whose contents differ from its destination copy is
-    /// copied over the destination. When `false`, only file names are
-    /// considered, so existing destination files are left untouched even if
-    /// their contents differ.
+    /// When `true`, files whose contents differ are copied over the destination.
+    /// When `false`, only file names are considered, so differing files are left
+    /// untouched.
     scan_contents: bool,
 }
 
@@ -269,9 +258,9 @@ impl Task {
     /// invalid.
     ///
     /// A task is rejected when either path is relative, or when the source and
-    /// destination are identical or nested within one another (which would back
-    /// a directory up into itself).
-    pub(crate) fn _validate(&self) -> io::Result<()> {
+    /// destination are identical or nested (which would back a directory up
+    /// into itself).
+    pub(crate) fn validate(&self) -> io::Result<()> {
         if !self.src.is_absolute() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -312,25 +301,19 @@ impl Task {
 
         Ok(())
     }
-    /// Return whether both the source and destination directories exist on
-    /// disk.
+    /// Return whether both the source and destination directories exist.
     ///
-    /// A task is only run when both exist, so [`run_tasks_list`] skips a task
-    /// whose directories are missing (e.g. a removable drive that isn't
-    /// mounted) instead of scheduling it.
+    /// [`run_tasks_list`] skips a task whose directories are missing (e.g. an
+    /// unmounted removable drive) instead of scheduling it.
     fn directories_exist(&self) -> bool {
         self.src.exists() && self.dst.exists()
     }
-    /// Compute the files under `src` that are missing from `dst` or whose
-    /// `dst` differ from the corresponding files in `src`, then spawn a
-    /// background thread to copy them while reporting progress to a bar
-    /// registered under `mp`.
+    /// Compute the files to copy, then spawn a background thread that copies
+    /// them while reporting progress to a bar registered under `mp`.
     ///
     /// Returns the thread's [`thread::JoinHandle`], which resolves to a
-    /// `(path, error message)` pair for each file that failed to copy, or an
-    /// error if a source file cannot be inspected while building the list.
-    /// Callers normally check [`Task::directories_exist`] first, so this runs
-    /// only when both directories are present.
+    /// `(path, error message)` pair for each failed file, or an error if a
+    /// source file cannot be inspected while building the list.
     fn run(&self, mp: &MultiProgress) -> io::Result<thread::JoinHandle<io::Result<FailedFiles>>> {
         // Determine which files to copy.
         let files_to_copy = self.compute_files_to_copy()?;
@@ -370,20 +353,17 @@ impl Task {
             copy_file_list(&src, &dst, &files_to_copy, &bar)
         }))
     }
-    /// Compute the relative paths and byte sizes of every source file that
-    /// must be copied to make `dst` mirror `src`.
+    /// Compute the relative paths and byte sizes of every source file that must
+    /// be copied to make `dst` mirror `src`.
     ///
-    /// A file is copied when it is missing under `dst`. When `scan_contents`
-    /// is `true`, a file is also copied when its destination copy differs from
-    /// the source (compared by size first, then by content); when it is
-    /// `false`, only file names are considered. The source file always
-    /// overwrites the destination. Files that exist only under `dst` are left
-    /// untouched. Each returned entry is a `(relative path, size in bytes)`
-    /// pair.
+    /// A file is copied when it is missing under `dst`, or, when `scan_contents`
+    /// is `true`, when its destination copy differs (compared by size, then
+    /// content). Files that exist only under `dst` are left untouched. Each
+    /// entry is a `(relative path, size in bytes)` pair.
     ///
-    /// Files are discovered with [`collect_files`], so hidden files and files
-    /// excluded by ignore rules are not considered. A missing `src` or `dst`
-    /// contributes an empty file set rather than an error.
+    /// Files are discovered with [`collect_files`], so hidden and ignored files
+    /// are not considered. A missing `src` or `dst` contributes an empty set
+    /// rather than an error.
     fn compute_files_to_copy(&self) -> io::Result<Vec<(PathBuf, u64)>> {
         info!("Computing files in task \"{}\" to copy...", self.name);
 
@@ -942,13 +922,13 @@ mod tests {
     #[test]
     fn validate_rejects_relative_src() {
         let t = task("t", Path::new("photos"), Path::new("/backup/photos"));
-        assert!(t._validate().is_err());
+        assert!(t.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_relative_dst() {
         let t = task("t", Path::new("/home/user/photos"), Path::new("backup"));
-        assert!(t._validate().is_err());
+        assert!(t.validate().is_err());
     }
 
     #[test]
@@ -958,7 +938,7 @@ mod tests {
             Path::new("/home/user/photos"),
             Path::new("/home/user/photos"),
         );
-        assert!(t._validate().is_err());
+        assert!(t.validate().is_err());
     }
 
     #[test]
@@ -968,7 +948,7 @@ mod tests {
             Path::new("/home/user/photos"),
             Path::new("/home/user/photos/backup"),
         );
-        assert!(t._validate().is_err());
+        assert!(t.validate().is_err());
     }
 
     #[test]
@@ -978,7 +958,7 @@ mod tests {
             Path::new("/home/user/photos/sub"),
             Path::new("/home/user/photos"),
         );
-        assert!(t._validate().is_err());
+        assert!(t.validate().is_err());
     }
 
     #[test]
@@ -988,7 +968,7 @@ mod tests {
             Path::new("/home/user/photos"),
             Path::new("/backup/photos"),
         );
-        assert!(t._validate().is_ok());
+        assert!(t.validate().is_ok());
     }
 
     #[test]
