@@ -8,14 +8,11 @@ use crate::core::Task;
 
 /// The parsed top-level contents of the `tasks.toml` config file.
 ///
-/// This only models the structure of the config file, so it lives here in
-/// `config.rs` rather than with the task behavior in `core.rs`.
+/// Only the file structure is modeled here; task behavior lives in `core.rs`.
 #[derive(Debug, Default, Deserialize)]
 pub struct TasksList {
-    /// The list of tasks defined in the config file.
-    ///
-    /// Defaults to an empty list so a freshly created (empty) config
-    /// file deserializes cleanly.
+    /// The tasks defined in the config file. Defaults to an empty list, so an
+    /// empty config file deserializes cleanly.
     #[serde(default)]
     pub tasks: Vec<Task>,
 }
@@ -23,28 +20,24 @@ pub struct TasksList {
 impl TasksList {
     /// Create a new [`TasksList`] and load it from the user's config file.
     ///
-    /// The config file is created (empty) if it doesn't already exist, so a
-    /// missing file is not an error. The returned `TasksList` may therefore
-    /// hold an empty task list.
+    /// A missing config file is created empty, so the returned list may be
+    /// empty.
     pub fn new() -> io::Result<Self> {
         let mut list = Self::default();
         list.load()?;
         Ok(list)
     }
-    /// Reload the tasks into `self` from the user's `tasks.toml` config file.
+    /// Reload the tasks from the user's `tasks.toml` config file, replacing the
+    /// current contents.
     ///
-    /// The config file is created (empty) if it doesn't already exist, so a
-    /// missing file is not an error. The current contents of `self` are
-    /// replaced by whatever is loaded from the file.
+    /// A missing config file is created empty and is not an error.
     pub fn load(&mut self) -> io::Result<()> {
         let config_path = Self::config_path()?;
         self.load_from(&config_path)
     }
-    /// Load tasks from the config file at `config_path`, replacing the current
-    /// contents of `self`.
+    /// Load tasks from `config_path`, replacing the current contents.
     ///
-    /// The config file is created (empty) if it doesn't already exist, so a
-    /// missing file is not an error.
+    /// A missing config file is created empty and is not an error.
     fn load_from(&mut self, config_path: &std::path::Path) -> io::Result<()> {
         debug!("Using config file at {}", config_path.display());
 
@@ -73,7 +66,7 @@ impl TasksList {
         // committing them, so a bad config never replaces a previously-loaded
         // one.
         for task in &parsed.tasks {
-            task._validate()?;
+            task.validate()?;
         }
 
         // Commit the parsed, validated tasks.
@@ -103,8 +96,8 @@ mod tests {
 
     use std::path::PathBuf;
 
-    /// Build a unique, per-test directory under the system temp directory that
-    /// is safe to write to and clean up afterwards.
+    /// Build a unique, per-test temp directory that is safe to write to and
+    /// clean up afterwards.
     fn temp_dir(test_name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "datadock_test_{}_{}",
