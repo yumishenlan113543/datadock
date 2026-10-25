@@ -1,6 +1,7 @@
 mod config;
 mod core;
 
+use clap::Parser;
 use indicatif::MultiProgress;
 use log::{error, info, warn};
 use terminal_size::{Width, terminal_size};
@@ -48,15 +49,30 @@ fn print_divider() {
     println!("{}", "─".repeat(width));
 }
 
+/// Command-line arguments for `datadock`.
+#[derive(Parser, Debug)]
+#[command(
+    name = env!("CARGO_CRATE_NAME"),
+    version,
+    about = "Back up source directories to destination directories."
+)]
+struct Cli {
+    /// List the files that would be copied without changing anything.
+    #[arg(long)]
+    dry_run: bool,
+}
+
 /// Load the configured tasks and run them, logging progress and results to the
 /// log file and printing a summary to the console.
 fn main() {
-    // Initialize the logger.
-    init_file_logger().unwrap();
-
     // Parse command-line arguments.
-    let args: Vec<String> = std::env::args().collect();
-    let dry_run = args.iter().any(|arg| arg == "--dry-run");
+    let cli = Cli::parse();
+
+    // Initialize the file logger.
+    if let Err(e) = init_file_logger() {
+        eprintln!("Failed to initialize logging: {e}");
+        std::process::exit(1);
+    }
 
     // Load the tasks list.
     println!("Loading the tasks...");
@@ -80,7 +96,7 @@ fn main() {
     }
 
     // Run the tasks or perform a dry run.
-    match dry_run {
+    match cli.dry_run {
         true => {
             // Perform a dry run of every task, printing the results to the console.
             println!("Performing a dry run of every task...");
