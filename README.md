@@ -1,13 +1,15 @@
 # datadock
 
-`datadock` is a small command-line file-backup tool written in Rust. It copies files from one or more *source* directories to matching *destination* directories, keeping the destination up to date with the source.
+`datadock` is a small command-line file-backup tool written in Rust. It copies files from one or more *source* directories to matching *destination* directories, keeping the destination up to date with the source according to each task's settings.
 
-Each backup job is called a **task**. Tasks are declared in a single TOML config file, and each task is run on its own background thread, with progress shown in the terminal and detailed logging written to a file.
+> **Positioning:** `datadock` is a tool for simple file backups (like photos and videos). If you need more advanced options, please look for another backup tool.
+
+Each backup job is called a **task**. Tasks are declared in a single TOML config file; each task's copying phase runs on its own background thread, with progress shown in the terminal and detailed logging written to a file.
 
 - **Incremental** — only files that are missing from the destination are copied, plus—when a task enables `scan_contents`—files that have changed (compared by size first, then by content).
 - **Ignore-aware** — hidden files and directories, plus files excluded by `.ignore`/`.gitignore` rules, are skipped during the scan.
-- **Mirrors, but never deletes** — files that exist only in the destination are left untouched. `datadock` never removes data from the destination.
-- **Safe copies** — each file is streamed to a temporary file in the destination and atomically renamed into place, so a failed copy never corrupts or truncates an existing file.
+- **Mirrors, but never deletes** — files that exist only in the destination are left untouched; `datadock` never deletes destination-only files.
+- **Safe copies** — each file is streamed to a temporary file alongside its destination and atomically renamed into place, so a failed copy never corrupts or truncates an existing file. The source file's permission bits are preserved.
 - **Dry run** — pass `--dry-run` to list the files a run would copy without changing the destination.
 
 ---
@@ -75,11 +77,11 @@ The file is resolved through the platform's standard user-config directory (usin
 | --- | --- |
 | Linux | `$XDG_CONFIG_HOME/datadock/tasks.toml` (or `~/.config/datadock/tasks.toml`) |
 | macOS | `~/Library/Application Support/datadock/tasks.toml` |
-| Windows | `%APPDATA%\datadock\tasks.toml` (e.g. `C:\Users\<You>\AppData\Roaming\datadock\tasks.toml`) |
+| Windows | `%APPDATA%\datadock\config\tasks.toml` (e.g. `C:\Users\<You>\AppData\Roaming\datadock\config\tasks.toml`) |
 
 ### Format
 
-The file is TOML. At the top level it has a single `tasks` key, whose value is an **array of tables** (one table per task). A task has exactly four fields:
+The file is TOML. At the top level it recognizes a single `tasks` key, whose value is an **array of tables** (one table per task). A task has four recognized fields, all required; unknown fields are ignored. For example:
 
 ```toml
 [[tasks]]
@@ -100,8 +102,8 @@ scan_contents = true
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | yes | A human-readable label for the task. Used in progress output and logs. |
-| `src` | string (path) | yes | The absolute source directory to copy **from**. |
-| `dst` | string (path) | yes | The absolute destination directory to copy **to**. |
+| `src` | string (path) | yes | The absolute source directory to copy **from**. Must not contain `..` components. |
+| `dst` | string (path) | yes | The absolute destination directory to copy **to**. Must not contain `..` components. |
 | `scan_contents` | boolean | yes | When `true`, files whose contents differ are copied over their destination copies. When `false`, only files missing from `dst` are copied; existing files are kept even if their contents differ. |
 
 ### Validation rules
@@ -110,9 +112,10 @@ Each task is validated when the config file is loaded. A task is rejected (and, 
 
 1. **`src` is not an absolute path.**
 2. **`dst` is not an absolute path.**
-3. **`src` and `dst` are identical**, or **one is nested inside the other** (in either direction). This would cause a directory to be backed up into itself, so it is always rejected — including when the nesting happens through a symlink.
+3. **`src` or `dst` contains a `..` component.** Paths are used as written, so `..` is rejected rather than resolved.
+4. **`src` and `dst` are identical**, or **one is nested inside the other** (in either direction). This would cause a directory to be backed up into itself, so it is always rejected — including when the nesting happens through a symlink that exists at load time.
 
-A valid `src`/`dst` pair are therefore two *unrelated* absolute paths, e.g. `/home/user/Pictures` → `/mnt/backup/Pictures`.
+A valid `src`/`dst` pair are therefore two *unrelated* absolute paths without `..` components, e.g. `/home/user/Pictures` → `/mnt/backup/Pictures`.
 
 If the config file cannot be parsed as TOML, `datadock` also reports an error and exits. A completely empty `tasks.toml` (or one with no `tasks` key) is valid and simply means "nothing to do".
 
@@ -148,22 +151,22 @@ Note that a missing `src` or `dst` does **not** stop the other tasks from runnin
 `datadock` is incremental and one-directional (source → destination):
 
 - A file is copied when it is **missing** under `dst`. When `scan_contents = true`, a file is also copied when its `dst` copy **differs** from `src`.
-- When `scan_contents = false`, an existing file under `dst` is left alone even if its contents differ from `src`; only its file name is considered.
+- When `scan_contents = false`, an existing file under `dst` is left alone even if its contents differ from `src`; only whether the file is present under `dst` is considered.
 - When enabled, "differs" is decided cheaply: sizes are compared first, and only when sizes are equal are the contents compared in fixed-size chunks (so large files are never loaded fully into memory).
-- Files that exist **only** in `dst` are left untouched — `datadock` never deletes anything from the destination.
+- Files that exist **only** in `dst` are left untouched — `datadock` never deletes destination-only files.
 - Hidden files and files excluded by ignore rules are not scanned, so they are never copied (see [Ignored and hidden files](#ignored-and-hidden-files)).
-- If a file **fails** to copy, it is reported to the console and skipped; the remaining files in the task are still copied.
+- If the copy of a file's contents **fails**, it is reported to the console and skipped; the remaining files in the task are still copied. A failure to create a destination parent directory is not skipped, however: it stops that task and the task is counted as failed.
 
 ### Ignored and hidden files
 
 File discovery uses the [`ignore`](https://crates.io/crates/ignore) crate with its default settings, so a scan is not a plain "every file" walk:
 
-- Entries whose name starts with `.` (hidden files and directories) are skipped. This covers things such as `.git`, `.cache`, and `.env`.
-- `.ignore` files are always honored.
-- Inside a git repository (a directory containing `.git`), `.gitignore`, `.git/info/exclude`, and the user's global git ignore file are honored as well. A `.gitignore` outside a git repository has no effect.
-- The rules apply to both `src` and `dst`, and each directory is evaluated independently. A file ignored under `src` is not backed up. A file ignored under `dst` is treated as missing from the destination, so it may be copied over on the next run.
+- Entries whose name starts with `.` are skipped (on Windows, entries with the hidden attribute are skipped too). This covers things such as `.git`, `.cache`, and `.env`.
+- `.ignore` files are always honored, including those in parent directories.
+- Inside a git repository (a directory containing `.git`), `.gitignore` files (also from parent directories), `.git/info/exclude`, and the user's global git ignore file are honored as well. A `.gitignore` outside a git repository has no effect.
+- The rules apply to both `src` and `dst`, and each directory is evaluated independently. A file ignored under `src` is not backed up. A file ignored under `dst` is treated as missing from the destination, so it is copied again on every run if the same relative file exists under `src`.
 
-Ignored entries are not errors; they are simply left out of the scan. If a file should be backed up, do not hide or ignore it. Entries that cannot be read are logged as warnings and skipped.
+Ignored entries are not errors; they are simply left out of the scan. If a file should be backed up, do not hide or ignore it. Entries that the scan cannot read are logged as warnings and skipped.
 
 ### Symlinks
 
@@ -173,7 +176,7 @@ A symlink to a regular file is collected during the scan and copied as a regular
 
 ### Concurrency
 
-Each task runs on its own background thread, and progress bars for all tasks are rendered together. A failure in one task does not prevent the others from running.
+Tasks are planned one at a time on the main thread: each task's source and destination are scanned and its copy list is computed before it is scheduled. The actual file copying for each task then runs on its own background thread, and progress bars for all copying tasks are rendered together. A failure in one task does not prevent the others from running.
 
 ---
 
@@ -183,7 +186,9 @@ Each task runs on its own background thread, and progress bars for all tasks are
 datadock
 ```
 
-The program loads `tasks.toml`, prints a short summary to the console (`Run finished: N succeeded, M failed.`), and writes detailed logs to a file (see [Logging](#logging)). Tasks skipped because `src` or `dst` is missing are not counted in the summary. Exit code `1` is returned when the config file fails to load or parse.
+The program loads `tasks.toml`, prints a short summary to the console (`Run finished: N succeeded, M failed.`), and writes detailed logs to a file (see [Logging](#logging)). The counts are **tasks**, not files. Tasks skipped because `src` or `dst` is missing are not counted. A task is counted as failed when planning its file list fails, when its copy thread returns an error, or when its thread panics; a task whose individual files fail to copy still counts as succeeded, and those files are reported separately.
+
+Exit code `1` is returned when the config file fails to load, parse, or validate, or when logging cannot be initialized. Task and per-file failures are reported on the console but do not change the exit code.
 
 Run `datadock --help` to see all options and `datadock --version` to print the version.
 
@@ -197,19 +202,19 @@ datadock --dry-run
 
 For each task whose `src` and `dst` both exist, it prints the absolute source path of every file that would be copied, using the same rules as a real run (see [What gets copied](#what-gets-copied)). Files that are already up to date, and hidden or ignored files, are omitted. Tasks whose `src` or `dst` is missing are skipped with a message, just like a normal run.
 
-A dry run does not create directories, copy or delete files, show progress bars, or print the `Run finished` summary. `scan_contents` still controls whether changed files are reported, and a task whose scan fails is reported without stopping the remaining tasks.
+A dry run does not create destination directories, copy or delete files, show progress bars, or print the `Run finished` summary. (As with any run, startup may still create the config and log locations if they do not exist.) `scan_contents` still controls whether changed files are reported, and a task whose scan fails is reported without stopping the remaining tasks.
 
 ---
 
 ## Logging
 
-`datadock` writes its log to `app.log` in the platform's user **data** directory, alongside the config file's parent directory:
+`datadock` writes its log to `app.log` in the platform's user **data** directory (note that on Linux and Windows this is a different directory from the config file's):
 
 | Platform | Log file path |
 | --- | --- |
-| Linux | `~/.local/share/datadock/app.log` |
+| Linux | `$XDG_DATA_HOME/datadock/app.log` (or `~/.local/share/datadock/app.log`) |
 | macOS | `~/Library/Application Support/datadock/app.log` |
-| Windows | `%APPDATA%\datadock\app.log` |
+| Windows | `%APPDATA%\datadock\data\app.log` (e.g. `C:\Users\<You>\AppData\Roaming\datadock\data\app.log`) |
 
 The log is truncated at the start of each run. The default level is `Info`; set the `RUST_LOG` environment variable to change it, e.g. `RUST_LOG=debug datadock`.
 
