@@ -132,6 +132,17 @@ fn main() {
                 }
             }
 
+            // Clear the progress bars so the final summary prints on a clean line.
+            let _ = progress.clear();
+            // Print a divider if there were any errors or failed files.
+            if !startup_errors.is_empty()
+                || !copy_errors.is_empty()
+                || !thread_panics.is_empty()
+                || !failed_files.is_empty()
+            {
+                print_divider()
+            };
+
             // Handle task errors.
             for error in startup_errors {
                 error!("Task error at startup: {error}");
@@ -152,11 +163,11 @@ fn main() {
             // Files that failed to copy are reported individually, but the task that
             // owned them still counts as succeeded.
             for (failed_file, error_message) in failed_files {
-                eprintln!("Failed to copy file \"{:?}\": {error_message}", failed_file)
+                eprintln!(
+                    "Failed to copy file \"{}\": {error_message}",
+                    failed_file.display()
+                )
             }
-
-            // Clear the progress bars so the final summary prints on a clean line.
-            let _ = progress.clear();
 
             // Print a divider.
             print_divider();
