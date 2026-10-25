@@ -2,31 +2,10 @@ use std::fs;
 use std::io;
 
 use log::{debug, info, warn};
-use serde::Deserialize;
 
-use crate::core::Task;
-
-/// The parsed top-level contents of the `tasks.toml` config file.
-///
-/// Only the file structure is modeled here; task behavior lives in `core.rs`.
-#[derive(Debug, Default, Deserialize)]
-pub struct TasksList {
-    /// The tasks defined in the config file. Defaults to an empty list, so an
-    /// empty config file deserializes cleanly.
-    #[serde(default)]
-    pub tasks: Vec<Task>,
-}
+use crate::core::task::TasksList;
 
 impl TasksList {
-    /// Create a new [`TasksList`] and load it from the user's config file.
-    ///
-    /// A missing config file is created empty, so the returned list may be
-    /// empty.
-    pub fn new() -> io::Result<Self> {
-        let mut list = Self::default();
-        list.load()?;
-        Ok(list)
-    }
     /// Reload the tasks from the user's `tasks.toml` config file, replacing the
     /// current contents.
     ///
@@ -92,9 +71,9 @@ impl TasksList {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use std::path::PathBuf;
+
+    use super::*;
 
     /// Build a unique, per-test temp directory that is safe to write to and
     /// clean up afterwards.
