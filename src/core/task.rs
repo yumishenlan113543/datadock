@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 use std::thread;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -47,10 +47,11 @@ impl Task {
     /// Validate this task's configuration, returning an error when it is
     /// invalid.
     ///
-    /// A task is rejected when either path is relative, or when the source and
-    /// destination are identical or nested (which would back a directory up
-    /// into itself).
+    /// A task is rejected when either path is relative or contains a `..`
+    /// component, or when the source and destination are identical or nested
+    /// (which would back a directory up into itself).
     pub fn validate(&self) -> io::Result<()> {
+        // Reject relative paths, which are ambiguous about the intended root.
         if !self.src.is_absolute() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -66,6 +67,29 @@ impl Task {
                 io::ErrorKind::InvalidInput,
                 format!(
                     "Task \"{}\": destination path \"{}\" must be absolute",
+                    self.name,
+                    self.dst.display()
+                ),
+            ));
+        }
+
+        // Reject `..` components before canonicalizing: a path such as
+        // `/a/b/../c` is ambiguous about which directory is meant.
+        if self.src.components().any(|c| c == Component::ParentDir) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Task \"{}\": source path \"{}\" must not contain \"..\"",
+                    self.name,
+                    self.src.display()
+                ),
+            ));
+        }
+        if self.dst.components().any(|c| c == Component::ParentDir) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Task \"{}\": destination path \"{}\" must not contain \"..\"",
                     self.name,
                     self.dst.display()
                 ),
@@ -486,6 +510,26 @@ mod tests {
     #[test]
     fn validate_rejects_relative_dst() {
         let t = task("t", Path::new("/home/user/photos"), Path::new("backup"));
+        assert!(t.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_src_with_parent_dir() {
+        let t = task(
+            "t",
+            Path::new("/home/user/photos/../other"),
+            Path::new("/backup/photos"),
+        );
+        assert!(t.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_dst_with_parent_dir() {
+        let t = task(
+            "t",
+            Path::new("/home/user/photos"),
+            Path::new("/backup/../photos"),
+        );
         assert!(t.validate().is_err());
     }
 
