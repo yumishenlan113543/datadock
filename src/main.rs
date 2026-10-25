@@ -52,6 +52,10 @@ fn main() {
     // Initialize the logger.
     init_file_logger().unwrap();
 
+    // Parse command-line arguments.
+    let args: Vec<String> = std::env::args().collect();
+    let dry_run = args.iter().any(|arg| arg == "--dry-run");
+
     // Load the tasks list.
     println!("Loading the tasks...");
     let tasks_list = config::TasksList::new().unwrap_or_else(|e| {
@@ -72,64 +76,74 @@ fn main() {
         return;
     }
 
-    // Run the tasks.
-    println!("Running the tasks...");
-    let progress = MultiProgress::new();
-    let (handles, startup_errors) = core::run_tasks_list(&tasks_list, &progress);
-    let mut copy_errors = Vec::new();
-    let mut thread_panics = Vec::new();
-    let mut failed_files = Vec::new();
+    // Run the tasks or perform a dry run.
+    match dry_run {
+        true => {
+            // Perform a dry run of every task, printing the results to the console.
+            println!("Performing a dry run of every task...");
+            core::dry_run_tasks_list(&tasks_list, &mut std::io::stdout());
+        }
+        false => {
+            // Run the tasks.
+            println!("Running the tasks...");
+            let progress = MultiProgress::new();
+            let (handles, startup_errors) = core::run_tasks_list(&tasks_list, &progress);
+            let mut copy_errors = Vec::new();
+            let mut thread_panics = Vec::new();
+            let mut failed_files = Vec::new();
 
-    // Wait for every task thread and tally the results.
-    let mut succeeded = 0u32;
-    let mut failed = 0u32;
-    for handle in handles {
-        match handle.join() {
-            Ok(Ok(failures)) => {
-                // The thread finished and the internal logic executed successfully.
-                failed_files.extend(failures);
-                succeeded += 1;
+            // Wait for every task thread and tally the results.
+            let mut succeeded = 0u32;
+            let mut failed = 0u32;
+            for handle in handles {
+                match handle.join() {
+                    Ok(Ok(failures)) => {
+                        // The thread finished and the internal logic executed successfully.
+                        failed_files.extend(failures);
+                        succeeded += 1;
+                    }
+                    Ok(Err(e)) => {
+                        // The thread finished but the internal logic failed.
+                        copy_errors.push(e);
+                    }
+                    Err(e) => {
+                        // The thread panicked.
+                        thread_panics.push(e);
+                    }
+                }
             }
-            Ok(Err(e)) => {
-                // The thread finished but the internal logic failed.
-                copy_errors.push(e);
+
+            // Handle task errors.
+            for error in startup_errors {
+                error!("Task error at startup: {error}");
+                eprintln!("Task error at startup: {error}");
+                failed += 1;
             }
-            Err(e) => {
-                // The thread panicked.
-                thread_panics.push(e);
+            for error in copy_errors {
+                error!("Task error during copying: {error}");
+                eprintln!("Task error during copying: {error}");
+                failed += 1;
             }
+            for panic in thread_panics {
+                error!("Thread panicked: {panic:?}");
+                eprintln!("Thread panicked: {panic:?}");
+                failed += 1;
+            }
+
+            // Files that failed to copy are reported individually, but the task that
+            // owned them still counts as succeeded.
+            for (failed_file, error_message) in failed_files {
+                eprintln!("Failed to copy file \"{:?}\": {error_message}", failed_file)
+            }
+
+            // Clear the progress bars so the final summary prints on a clean line.
+            let _ = progress.clear();
+
+            // Print a divider.
+            print_divider();
+
+            info!("Run finished: {succeeded} succeeded, {failed} failed");
+            println!("Run finished: {succeeded} succeeded, {failed} failed.");
         }
     }
-
-    // Handle task errors.
-    for error in startup_errors {
-        error!("Task error at startup: {error}");
-        eprintln!("Task error at startup: {error}");
-        failed += 1;
-    }
-    for error in copy_errors {
-        error!("Task error during copying: {error}");
-        eprintln!("Task error during copying: {error}");
-        failed += 1;
-    }
-    for panic in thread_panics {
-        error!("Thread panicked: {panic:?}");
-        eprintln!("Thread panicked: {panic:?}");
-        failed += 1;
-    }
-
-    // Files that failed to copy are reported individually, but the task that
-    // owned them still counts as succeeded.
-    for (failed_file, error_message) in failed_files {
-        eprintln!("Failed to copy file \"{:?}\": {error_message}", failed_file)
-    }
-
-    // Clear the progress bars so the final summary prints on a clean line.
-    let _ = progress.clear();
-
-    // Print a divider.
-    print_divider();
-
-    info!("Run finished: {succeeded} succeeded, {failed} failed.");
-    println!("Run finished: {succeeded} succeeded, {failed} failed.");
 }
