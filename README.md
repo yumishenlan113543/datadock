@@ -185,6 +185,8 @@ datadock
 
 The program loads `tasks.toml`, prints a short summary to the console (`Run finished: N succeeded, M failed.`), and writes detailed logs to a file (see [Logging](#logging)). Tasks skipped because `src` or `dst` is missing are not counted in the summary. Exit code `1` is returned when the config file fails to load or parse.
 
+Run `datadock --help` to see all options and `datadock --version` to print the version.
+
 ### Dry run
 
 Pass `--dry-run` to preview a run without copying anything:
