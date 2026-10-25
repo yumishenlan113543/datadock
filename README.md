@@ -8,6 +8,7 @@ Each backup job is called a **task**. Tasks are declared in a single TOML config
 - **Ignore-aware** — hidden files and directories, plus files excluded by `.ignore`/`.gitignore` rules, are skipped during the scan.
 - **Mirrors, but never deletes** — files that exist only in the destination are left untouched. `datadock` never removes data from the destination.
 - **Safe copies** — each file is streamed to a temporary file in the destination and atomically renamed into place, so a failed copy never corrupts or truncates an existing file.
+- **Dry run** — pass `--dry-run` to list the files a run would copy without changing the destination.
 
 ---
 
@@ -26,6 +27,7 @@ Each backup job is called a **task**. Tasks are declared in a single TOML config
   - [Symlinks](#symlinks)
   - [Concurrency](#concurrency)
 - [Running](#running)
+  - [Dry run](#dry-run)
 - [Logging](#logging)
 - [License](#license)
 
@@ -139,7 +141,7 @@ mkdir -p /mnt/backup/Pictures   # destination root must exist
 datadock                        # source /home/user/Pictures must also exist
 ```
 
-Note that a missing `src` or `dst` does **not** stop the other tasks from running: each task is independent, and a task whose directories are missing is skipped (and not counted in the final summary) while the remaining tasks continue.
+Note that a missing `src` or `dst` does **not** stop the other tasks from running: each task is independent, and a task whose directories are missing is skipped (and not counted in the final summary) while the remaining tasks continue. A [dry run](#dry-run) applies the same rule and skips tasks whose directories are missing.
 
 ### What gets copied
 
@@ -182,6 +184,18 @@ datadock
 ```
 
 The program loads `tasks.toml`, prints a short summary to the console (`Run finished: N succeeded, M failed.`), and writes detailed logs to a file (see [Logging](#logging)). Tasks skipped because `src` or `dst` is missing are not counted in the summary. Exit code `1` is returned when the config file fails to load or parse.
+
+### Dry run
+
+Pass `--dry-run` to preview a run without copying anything:
+
+```sh
+datadock --dry-run
+```
+
+For each task whose `src` and `dst` both exist, it prints the absolute source path of every file that would be copied, using the same rules as a real run (see [What gets copied](#what-gets-copied)). Files that are already up to date, and hidden or ignored files, are omitted. Tasks whose `src` or `dst` is missing are skipped with a message, just like a normal run.
+
+A dry run does not create directories, copy or delete files, show progress bars, or print the `Run finished` summary. `scan_contents` still controls whether changed files are reported, and a task whose scan fails is reported without stopping the remaining tasks.
 
 ---
 

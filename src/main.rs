@@ -5,6 +5,8 @@ use indicatif::MultiProgress;
 use log::{error, info, warn};
 use terminal_size::{Width, terminal_size};
 
+use core::task::TasksList;
+
 /// Configure a file-only logger that writes to `app.log` in the platform user
 /// data directory (e.g. `~/.local/share/datadock/app.log` on Linux).
 ///
@@ -58,7 +60,8 @@ fn main() {
 
     // Load the tasks list.
     println!("Loading the tasks...");
-    let tasks_list = config::TasksList::new().unwrap_or_else(|e| {
+    let mut tasks_list = TasksList::default();
+    tasks_list.load().unwrap_or_else(|e| {
         error!("Failed to load tasks: {e}");
         eprintln!("Failed to load tasks: {e}");
         std::process::exit(1);
@@ -81,13 +84,13 @@ fn main() {
         true => {
             // Perform a dry run of every task, printing the results to the console.
             println!("Performing a dry run of every task...");
-            core::dry_run_tasks_list(&tasks_list, &mut std::io::stdout());
+            tasks_list.dry_run(&mut std::io::stdout());
         }
         false => {
             // Run the tasks.
             println!("Running the tasks...");
             let progress = MultiProgress::new();
-            let (handles, startup_errors) = core::run_tasks_list(&tasks_list, &progress);
+            let (handles, startup_errors) = tasks_list.run(&progress);
             let mut copy_errors = Vec::new();
             let mut thread_panics = Vec::new();
             let mut failed_files = Vec::new();
