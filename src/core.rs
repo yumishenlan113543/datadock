@@ -37,12 +37,12 @@ pub fn run_tasks_list(
 
     for task in &tasks_list.tasks {
         if task.directories_exist() {
-            info!("Starting task \"{}\"", task.name);
+            info!("Starting task \"{}\"...", task.name);
             let _ = mp.println(format!("Starting task \"{}\"", task.name));
             match task.run(mp) {
                 Ok(join_handle) => {
-                    join_handles.push(join_handle);
                     info!("Task \"{}\" scheduled on a background thread", task.name);
+                    join_handles.push(join_handle);
                 }
                 Err(e) => {
                     warn!("Task \"{}\" failed to start: {e}", task.name);
@@ -62,6 +62,50 @@ pub fn run_tasks_list(
     }
 
     (join_handles, errors)
+}
+
+/// Perform a dry run of every task in `tasks_list`, printing the results to `out`.
+pub fn dry_run_tasks_list(tasks_list: &TasksList, out: &mut impl Write) {
+    for task in &tasks_list.tasks {
+        if task.directories_exist() {
+            info!("Dry run for task \"{}\"...", task.name);
+            writeln!(out, "Dry run for task \"{}\"...", task.name).unwrap();
+            match task.dry_run() {
+                Ok(paths) => {
+                    info!(
+                        "Task \"{}\" dry run found {} file(s) to copy",
+                        task.name,
+                        paths.len()
+                    );
+                    writeln!(
+                        out,
+                        "Task \"{}\" dry run found {} file(s) to copy:",
+                        task.name,
+                        paths.len()
+                    )
+                    .unwrap();
+                    for path in paths {
+                        writeln!(out, "    \"{}\"", path.display()).unwrap();
+                    }
+                }
+                Err(e) => {
+                    warn!("Task \"{}\" dry run failed: {e}", task.name);
+                    writeln!(out, "Task \"{}\" dry run failed: {e}", task.name).unwrap();
+                }
+            }
+        } else {
+            info!(
+                "At least one folder for task \"{}\" doesn't exist, skipping dry run...",
+                task.name
+            );
+            writeln!(
+                out,
+                "At least one folder for task \"{}\" doesn't exist, skipping dry run...",
+                task.name
+            )
+            .unwrap();
+        }
+    }
 }
 
 /// Recursively collect every regular file under `root`.
@@ -352,6 +396,17 @@ impl Task {
         Ok(thread::spawn(move || {
             copy_file_list(&src, &dst, &files_to_copy, &bar)
         }))
+    }
+    /// Perform a dry run of this task, returning the absolute paths of every source.
+    fn dry_run(&self) -> io::Result<Vec<PathBuf>> {
+        // Determine which files to copy.
+        let files_to_copy = self.compute_files_to_copy()?;
+        let paths: Vec<PathBuf> = files_to_copy
+            .into_iter()
+            .map(|(path, _size)| self.src.join(path))
+            .collect();
+
+        Ok(paths)
     }
     /// Compute the relative paths and byte sizes of every source file that must
     /// be copied to make `dst` mirror `src`.
