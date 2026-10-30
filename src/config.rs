@@ -88,6 +88,15 @@ mod tests {
         dir
     }
 
+    /// Render `path` for embedding in a TOML basic string.
+    ///
+    /// Windows paths contain backslashes, which are escape characters in TOML,
+    /// so use forward slashes instead; `PathBuf` accepts them on every
+    /// platform.
+    fn toml_path(path: &std::path::Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
     #[test]
     fn default_has_no_tasks() {
         let list = TasksList::default();
@@ -161,13 +170,17 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             &config_path,
-            r#"
+            format!(
+                r#"
                 [[tasks]]
                 name = "photos"
-                src = "/home/user/photos"
-                dst = "/backup/photos"
+                src = "{}"
+                dst = "{}"
                 scan_contents = true
             "#,
+                toml_path(&dir.join("photos")),
+                toml_path(&dir.join("backup").join("photos")),
+            ),
         )
         .unwrap();
 
@@ -187,13 +200,17 @@ mod tests {
 
         fs::write(
             &config_path,
-            r#"
+            format!(
+                r#"
                 [[tasks]]
                 name = "photos"
-                src = "/a"
-                dst = "/b"
+                src = "{}"
+                dst = "{}"
                 scan_contents = true
             "#,
+                toml_path(&dir.join("a")),
+                toml_path(&dir.join("b")),
+            ),
         )
         .unwrap();
 
@@ -261,13 +278,16 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             &config_path,
-            r#"
+            format!(
+                r#"
                 [[tasks]]
                 name = "photos"
                 src = "photos"
-                dst = "/backup/photos"
+                dst = "{}"
                 scan_contents = true
             "#,
+                toml_path(&dir.join("backup").join("photos")),
+            ),
         )
         .unwrap();
 
@@ -288,13 +308,17 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             &config_path,
-            r#"
+            format!(
+                r#"
                 [[tasks]]
                 name = "photos"
-                src = "/home/user/photos"
-                dst = "/home/user/photos/backup"
+                src = "{}"
+                dst = "{}"
                 scan_contents = true
             "#,
+                toml_path(&dir.join("photos")),
+                toml_path(&dir.join("photos").join("backup")),
+            ),
         )
         .unwrap();
 
