@@ -503,72 +503,84 @@ mod tests {
 
     #[test]
     fn validate_rejects_relative_src() {
-        let t = task("t", Path::new("photos"), Path::new("/backup/photos"));
+        let root = temp_dir("validate_relative_src");
+        let t = task(
+            "t",
+            Path::new("photos"),
+            &root.join("backup").join("photos"),
+        );
         assert!(t.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_relative_dst() {
-        let t = task("t", Path::new("/home/user/photos"), Path::new("backup"));
+        let root = temp_dir("validate_relative_dst");
+        let t = task(
+            "t",
+            &root.join("home").join("user").join("photos"),
+            Path::new("backup"),
+        );
         assert!(t.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_src_with_parent_dir() {
+        let root = temp_dir("validate_src_parent_dir");
         let t = task(
             "t",
-            Path::new("/home/user/photos/../other"),
-            Path::new("/backup/photos"),
+            &root
+                .join("home")
+                .join("user")
+                .join("photos")
+                .join("..")
+                .join("other"),
+            &root.join("backup").join("photos"),
         );
         assert!(t.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_dst_with_parent_dir() {
+        let root = temp_dir("validate_dst_parent_dir");
         let t = task(
             "t",
-            Path::new("/home/user/photos"),
-            Path::new("/backup/../photos"),
+            &root.join("home").join("user").join("photos"),
+            &root.join("backup").join("..").join("photos"),
         );
         assert!(t.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_identical_paths() {
-        let t = task(
-            "t",
-            Path::new("/home/user/photos"),
-            Path::new("/home/user/photos"),
-        );
+        let root = temp_dir("validate_identical");
+        let path = root.join("home").join("user").join("photos");
+        let t = task("t", &path, &path);
         assert!(t.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_dst_nested_in_src() {
-        let t = task(
-            "t",
-            Path::new("/home/user/photos"),
-            Path::new("/home/user/photos/backup"),
-        );
+        let root = temp_dir("validate_dst_nested");
+        let src = root.join("home").join("user").join("photos");
+        let t = task("t", &src, &src.join("backup"));
         assert!(t.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_src_nested_in_dst() {
-        let t = task(
-            "t",
-            Path::new("/home/user/photos/sub"),
-            Path::new("/home/user/photos"),
-        );
+        let root = temp_dir("validate_src_nested");
+        let dst = root.join("home").join("user").join("photos");
+        let t = task("t", &dst.join("sub"), &dst);
         assert!(t.validate().is_err());
     }
 
     #[test]
     fn validate_accepts_sibling_paths() {
+        let root = temp_dir("validate_siblings");
         let t = task(
             "t",
-            Path::new("/home/user/photos"),
-            Path::new("/backup/photos"),
+            &root.join("home").join("user").join("photos"),
+            &root.join("backup").join("photos"),
         );
         assert!(t.validate().is_ok());
     }
