@@ -48,8 +48,9 @@ impl Task {
     /// invalid.
     ///
     /// A task is rejected when either path is relative or contains a `..`
-    /// component, or when the source and destination are identical or nested
-    /// (which would back a directory up into itself).
+    /// component, when a path that exists is not a directory, or when the
+    /// source and destination are identical or nested (which would back a
+    /// directory up into itself).
     pub fn validate(&self) -> io::Result<()> {
         // Reject relative paths, which are ambiguous about the intended root.
         if !self.src.is_absolute() {
@@ -96,6 +97,31 @@ impl Task {
             ));
         }
 
+        // A path that exists but is not a directory can never be a valid
+        // source or destination root. Missing paths are still allowed here:
+        // they may be on an unmounted removable drive, and the task is skipped
+        // at run time instead.
+        if self.src.exists() && !self.src.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Task \"{}\": source path \"{}\" is not a directory",
+                    self.name,
+                    self.src.display()
+                ),
+            ));
+        }
+        if self.dst.exists() && !self.dst.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Task \"{}\": destination path \"{}\" is not a directory",
+                    self.name,
+                    self.dst.display()
+                ),
+            ));
+        }
+
         // Resolve symlinks where possible (falling back to the already-absolute
         // path when it doesn't exist yet) so nesting through a symlink is also
         // caught.
@@ -115,12 +141,14 @@ impl Task {
 
         Ok(())
     }
-    /// Return whether both the source and destination directories exist.
+    /// Return whether both the source and destination paths exist and are
+    /// directories.
     ///
     /// [`TasksList::run`] skips a task whose directories are missing (e.g. an
-    /// unmounted removable drive) instead of scheduling it.
+    /// unmounted removable drive) or are not directories instead of scheduling
+    /// it.
     fn directories_exist(&self) -> bool {
-        self.src.exists() && self.dst.exists()
+        self.src.is_dir() && self.dst.is_dir()
     }
     /// Compute the relative paths and byte sizes of every source file that must
     /// be copied to make `dst` mirror `src`.
@@ -251,9 +279,9 @@ impl TasksList {
     /// failed to copy. Each task registers its own [`ProgressBar`] under `mp`, which
     /// the caller uses to render all bars together.
     ///
-    /// A task whose source or destination directory is missing is skipped with a
-    /// message; any other scheduling failure is collected into the returned error
-    /// list. The remaining tasks still run.
+    /// A task whose source or destination directory is missing or is not a
+    /// directory is skipped with a message; any other scheduling failure is
+    /// collected into the returned error list. The remaining tasks still run.
     pub fn run(&self, mp: &MultiProgress) -> (Vec<CopyThreadJoinHandle>, Vec<io::Error>) {
         let mut join_handles = Vec::new();
         let mut errors = Vec::new();
@@ -274,11 +302,11 @@ impl TasksList {
                 }
             } else {
                 info!(
-                    "At least one folder for task \"{}\" doesn't exist, skipping...",
+                    "At least one folder for task \"{}\" is missing or not a directory, skipping...",
                     task.name
                 );
                 let _ = mp.println(format!(
-                    "At least one folder for task \"{}\" doesn't exist, skipping...",
+                    "At least one folder for task \"{}\" is missing or not a directory, skipping...",
                     task.name
                 ));
             }
@@ -317,15 +345,14 @@ impl TasksList {
                 }
             } else {
                 info!(
-                    "At least one folder for task \"{}\" doesn't exist, skipping dry run...",
+                    "At least one folder for task \"{}\" is missing or not a directory, skipping dry run...",
                     task.name
                 );
                 writeln!(
                     out,
-                    "At least one folder for task \"{}\" doesn't exist, skipping dry run...",
+                    "At least one folder for task \"{}\" is missing or not a directory, skipping dry run...",
                     task.name
-                )
-                .unwrap();
+                ).unwrap();
             }
         }
     }
@@ -585,6 +612,43 @@ mod tests {
         assert!(t.validate().is_ok());
     }
 
+    #[test]
+    fn validate_rejects_src_that_is_a_file() {
+        let root = temp_dir("validate_src_file");
+        let src = root.join("not_a_dir");
+        write_file(&src, b"x");
+
+        let t = task("t", &src, &root.join("backup"));
+        assert!(t.validate().is_err());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_dst_that_is_a_file() {
+        let root = temp_dir("validate_dst_file");
+        let dst = root.join("not_a_dir");
+        write_file(&dst, b"x");
+
+        let t = task("t", &root.join("photos"), &dst);
+        assert!(t.validate().is_err());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_missing_directories() {
+        let root = temp_dir("validate_missing_dirs");
+        fs::create_dir_all(&root).unwrap();
+
+        // Missing paths are allowed so a task on an unmounted drive can be
+        // skipped at run time instead of rejecting the whole config.
+        let t = task("t", &root.join("photos"), &root.join("backup"));
+        assert!(t.validate().is_ok());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn validate_rejects_nesting_through_symlink() {
@@ -609,6 +673,10 @@ mod tests {
         let dst = dir.join("dst");
         fs::create_dir_all(&src).unwrap();
         fs::create_dir_all(&dst).unwrap();
+        let src_file = dir.join("src_file");
+        let dst_file = dir.join("dst_file");
+        write_file(&src_file, b"x");
+        write_file(&dst_file, b"x");
 
         // Neither exists.
         assert!(!task("t", &dir.join("other_src"), &dir.join("other_dst")).directories_exist());
@@ -618,6 +686,10 @@ mod tests {
         assert!(!task("t", &dir.join("other_src"), &dst).directories_exist());
         // Both exist.
         assert!(task("t", &src, &dst).directories_exist());
+        // Existing paths that are files are not directories.
+        assert!(!task("t", &src_file, &dst).directories_exist());
+        assert!(!task("t", &src, &dst_file).directories_exist());
+        assert!(!task("t", &src_file, &dst_file).directories_exist());
 
         fs::remove_dir_all(&dir).unwrap();
     }

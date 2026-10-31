@@ -144,7 +144,8 @@ Each task is validated when the config file is loaded. A task is rejected (and, 
 1. **`src` is not an absolute path.**
 2. **`dst` is not an absolute path.**
 3. **`src` or `dst` contains a `..` component.** Paths are used as written, so `..` is rejected rather than resolved.
-4. **`src` and `dst` are identical**, or **one is nested inside the other** (in either direction). This would cause a directory to be backed up into itself, so it is always rejected — including when the nesting happens through a symlink that exists at load time.
+4. **`src` or `dst` exists but is not a directory.** Missing paths are allowed, since they may be on an unmounted removable drive; such a task is skipped at run time instead.
+5. **`src` and `dst` are identical**, or **one is nested inside the other** (in either direction). This would cause a directory to be backed up into itself, so it is always rejected — including when the nesting happens through a symlink that exists at load time.
 
 A valid `src`/`dst` pair are therefore two *unrelated* absolute paths without `..` components, e.g. `/home/user/Pictures` → `/mnt/backup/Pictures`.
 
@@ -162,9 +163,9 @@ For each task, `datadock`:
 
 ### The destination must already exist
 
-**A task only starts when both `src` and `dst` already exist. This is by design.**
+**A task only starts when both `src` and `dst` already exist and are directories. This is by design.**
 
-If either the source directory or the destination directory is missing, the task is **skipped** (a message is printed to the console and the log) rather than run. `datadock` intentionally does **not** create the destination root directory for you, and a skipped task is **not** counted as a failure.
+If either the source directory or the destination directory is missing, the task is **skipped** (a message is printed to the console and the log) rather than run. An existing path that is not a directory is instead rejected when the config is loaded (see [Validation rules](#validation-rules)). `datadock` intentionally does **not** create the destination root directory for you, and a skipped task is **not** counted as a failure.
 
 > Why: `src` or `dst` is often a removable drive (an external disk, USB stick, or SD card) that is not always connected or mounted. `datadock` requires both directories to be present before starting so a backup is never silently missed — a missing drive is instead surfaced as a visible "skipping" message, prompting you to plug it in.
 
@@ -231,7 +232,7 @@ Pass `--dry-run` to preview a run without copying anything:
 datadock --dry-run
 ```
 
-For each task whose `src` and `dst` both exist, it prints the absolute source path of every file that would be copied, using the same rules as a real run (see [What gets copied](#what-gets-copied)). Files that are already up to date, and hidden or ignored files, are omitted. Tasks whose `src` or `dst` is missing are skipped with a message, just like a normal run.
+For each task whose `src` and `dst` both exist and are directories, it prints the absolute source path of every file that would be copied, using the same rules as a real run (see [What gets copied](#what-gets-copied)). Files that are already up to date, and hidden or ignored files, are omitted. Tasks whose `src` or `dst` is missing are skipped with a message, just like a normal run.
 
 A dry run does not create destination directories, copy or delete files, show progress bars, or print the `Run finished` summary. (As with any run, startup may still create the config and log locations if they do not exist.) `scan_contents` still controls whether changed files are reported, and a task whose scan fails is reported without stopping the remaining tasks.
 
