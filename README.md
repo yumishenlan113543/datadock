@@ -218,9 +218,9 @@ Tasks are planned one at a time on the main thread: each task's source and desti
 datadock
 ```
 
-The program loads `tasks.toml`, prints a short summary to the console (`Run finished: N succeeded, M failed.`), and writes detailed logs to a file (see [Logging](#logging)). The counts are **tasks**, not files. Tasks skipped because `src` or `dst` is missing are not counted. A task is counted as failed when planning its file list fails, when its copy thread returns an error, or when its thread panics; a task whose individual files fail to copy still counts as succeeded, and those files are reported separately.
+The program loads `tasks.toml`, prints a short summary to the console (`Run finished: N task(s) succeeded, M task(s) failed, K file(s) failed.`), and writes detailed logs to a file (see [Logging](#logging)). The first two counts are **tasks** and the last is **individual files**. Tasks skipped because `src` or `dst` is missing are not counted. A task is counted as failed when planning its file list fails, when its copy thread returns an error, or when its thread panics; a task whose individual files fail to copy still counts as succeeded, but those files are counted separately in the summary.
 
-Exit code `1` is returned when the config file fails to load, parse, or validate, or when logging cannot be initialized. Task and per-file failures are reported on the console but do not change the exit code.
+Exit code `1` is returned when the config file fails to load, parse, or validate; when logging cannot be initialized; when any task fails; when any file fails to copy; or when a task's scan fails during a dry run. Tasks skipped because `src` or `dst` is missing do not change the exit code.
 
 Run `datadock --help` to see all options and `datadock --version` to print the version.
 

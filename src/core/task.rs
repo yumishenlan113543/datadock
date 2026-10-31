@@ -315,7 +315,12 @@ impl TasksList {
         (join_handles, errors)
     }
     /// Perform a dry run of every task in `self`, printing the results to `out`.
-    pub fn dry_run(&self, out: &mut impl Write) {
+    ///
+    /// Returns the number of tasks whose scan failed. Tasks skipped because a
+    /// directory is missing or is not a directory are not counted.
+    pub fn dry_run(&self, out: &mut impl Write) -> usize {
+        let mut failures = 0;
+
         for task in &self.tasks {
             if task.directories_exist() {
                 info!("Dry run for task \"{}\"...", task.name);
@@ -339,6 +344,7 @@ impl TasksList {
                         }
                     }
                     Err(e) => {
+                        failures += 1;
                         warn!("Task \"{}\" dry run failed: {e}", task.name);
                         writeln!(out, "Task \"{}\" dry run failed: {e}", task.name).unwrap();
                     }
@@ -355,6 +361,8 @@ impl TasksList {
                 ).unwrap();
             }
         }
+
+        failures
     }
 }
 
@@ -850,9 +858,10 @@ mod tests {
         };
 
         let mut out = Vec::new();
-        tasks.dry_run(&mut out);
+        let failures = tasks.dry_run(&mut out);
         let output = String::from_utf8(out).unwrap();
 
+        assert_eq!(failures, 0);
         assert!(output.contains("Dry run for task \"t\"..."));
         assert!(output.contains("Task \"t\" dry run found 1 file(s) to copy:"));
         assert!(output.contains(&src.join("a.txt").display().to_string()));
@@ -872,9 +881,11 @@ mod tests {
         };
 
         let mut out = Vec::new();
-        tasks.dry_run(&mut out);
+        let failures = tasks.dry_run(&mut out);
         let output = String::from_utf8(out).unwrap();
 
+        // Skipped tasks are not scan failures.
+        assert_eq!(failures, 0);
         assert!(output.contains("skipping dry run"));
         assert!(!output.contains("found"));
 

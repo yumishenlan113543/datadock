@@ -1,6 +1,8 @@
 mod config;
 mod core;
 
+use std::io::Write;
+
 use clap::Parser;
 use indicatif::MultiProgress;
 use log::{error, info, warn};
@@ -100,7 +102,13 @@ fn main() {
         true => {
             // Perform a dry run of every task, printing the results to the console.
             println!("Performing a dry run of every task...");
-            tasks_list.dry_run(&mut std::io::stdout());
+            let scan_failures = tasks_list.dry_run(&mut std::io::stdout());
+            if scan_failures > 0 {
+                // A task whose scan failed was already reported; make the
+                // failure visible to scripts and the caller as well.
+                let _ = std::io::stdout().flush();
+                std::process::exit(1);
+            }
         }
         false => {
             // Run the tasks.
@@ -112,8 +120,8 @@ fn main() {
             let mut failed_files = Vec::new();
 
             // Wait for every task thread and tally the results.
-            let mut succeeded = 0u32;
-            let mut failed = 0u32;
+            let mut succeeded = 0usize;
+            let mut failed = 0usize;
             for handle in handles {
                 match handle.join() {
                     Ok(Ok(failures)) => {
@@ -131,6 +139,7 @@ fn main() {
                     }
                 }
             }
+            let failed_file_count = failed_files.len();
 
             // Clear the progress bars so the final summary prints on a clean line.
             let _ = progress.clear();
@@ -159,9 +168,6 @@ fn main() {
                 eprintln!("Thread panicked: {panic:?}");
                 failed += 1;
             }
-
-            // Files that failed to copy are reported individually, but the task that
-            // owned them still counts as succeeded.
             for (failed_file, error_message) in failed_files {
                 eprintln!(
                     "Failed to copy file \"{}\": {error_message}",
@@ -169,11 +175,21 @@ fn main() {
                 )
             }
 
-            // Print a divider.
+            // Print a divider and a summary of the run results.
             print_divider();
+            info!(
+                "Run finished: {succeeded} task(s) succeeded, {failed} task(s) failed, {failed_file_count} file(s) failed"
+            );
+            println!(
+                "Run finished: {succeeded} task(s) succeeded, {failed} task(s) failed, {failed_file_count} file(s) failed."
+            );
 
-            info!("Run finished: {succeeded} succeeded, {failed} failed");
-            println!("Run finished: {succeeded} succeeded, {failed} failed.");
+            // Any failed task or file must be visible to scripts and the caller,
+            // even though the remaining tasks were still attempted.
+            if failed > 0 || failed_file_count > 0 {
+                let _ = std::io::stdout().flush();
+                std::process::exit(1);
+            }
         }
     }
 }
