@@ -11,6 +11,13 @@ on:
           - release
           - debug
         default: release
+  workflow_call:
+    inputs:
+      build-mode:
+        description: "Build mode (debug binaries include symbols and are much slower)"
+        required: false
+        type: string
+        default: release
 
 permissions:
   contents: read
@@ -27,6 +34,9 @@ env:
 jobs:
   test:
     name: CI tests
+    # Explicitly grant read-only access to the reusable workflow.
+    permissions:
+      contents: read
     uses: ./.github/workflows/ci.yml
 
   build:

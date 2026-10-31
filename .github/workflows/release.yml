@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Read-only by default; only the release job needs to write repository contents.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build release binaries
+    # Explicitly grant read-only access to the reusable workflow.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+    with:
+      build-mode: release
+
+  release:
+    name: Create draft release
+    needs: build
+    runs-on: ubuntu-latest
+    # Required to create the release and upload its assets.
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: datadock-*-release
+          path: dist
+          merge-multiple: true
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: dist/*
