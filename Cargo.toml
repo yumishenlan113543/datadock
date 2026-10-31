@@ -2,6 +2,14 @@
 name = "datadock"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+authors = ["yumishenlan113543 <yumishenlan@outlook.com>"]
+description = "A small command-line backup tool that copies source directories to destination directories."
+license = "MIT"
+repository = "https://github.com/yumishenlan113543/datadock"
+readme = "README.md"
+keywords = ["backup", "cli", "files", "copy"]
+categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
