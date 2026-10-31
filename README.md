@@ -16,8 +16,9 @@ Each backup job is called a **task**. Tasks are declared in a single TOML config
 
 ## Table of contents
 
-- [Building](#building)
-  - [Prebuilt binaries via GitHub Actions](#prebuilt-binaries-via-github-actions)
+- [Installation](#installation)
+  - [Prebuilt binaries](#prebuilt-binaries)
+  - [Building from source](#building-from-source)
 - [Configuration file](#configuration-file)
   - [Location](#location)
   - [Format](#format)
@@ -36,7 +37,22 @@ Each backup job is called a **task**. Tasks are declared in a single TOML config
 
 ---
 
-## Building
+## Installation
+
+### Prebuilt binaries
+
+Download the binary for your platform from the [Releases](https://github.com/yumishenlan113543/datadock/releases) page. No Rust toolchain is required.
+
+| Platform | Binary |
+| --- | --- |
+| Linux x86_64 | `datadock-linux-x86_64` |
+| macOS (Apple Silicon) | `datadock-macos-aarch64` |
+| macOS (Intel) | `datadock-macos-x86_64` |
+| Windows x86_64 | `datadock-windows-x86_64.exe` |
+
+Each release provides one executable per platform. Download the file for your system, make it executable if needed (`chmod +x datadock-*` on Linux/macOS), and run it directly.
+
+### Building from source
 
 `datadock` is built with Cargo (Rust's package manager) and requires a stable Rust toolchain (edition 2024).
 
@@ -62,37 +78,7 @@ Each backup job is called a **task**. Tasks are declared in a single TOML config
    cargo run
    ```
 
-   This is handy during development, but for regular use prefer `cargo build --release` and run the resulting `target/release/datadock` binary.
-
-### Prebuilt binaries via GitHub Actions
-
-You can also build without a local Rust toolchain by running the **Build** workflow (`.github/workflows/build.yml`) from the repository's **Actions** tab:
-
-1. Open **Actions → Build → Run workflow**.
-2. Choose the branch to build from the **Use workflow from** dropdown (any branch or tag in the repository, not just the default branch).
-3. Choose the build mode: `release` (default) or `debug`.
-4. Click **Run workflow**.
-
-Before compiling, the workflow runs the full CI suite (check, tests, and clippy on Linux, macOS, and Windows). If any of those checks fail, the build is skipped and the workflow run fails.
-
-The workflow compiles the project on native runners and publishes one downloadable artifact per platform, named `datadock-<platform>-<mode>`:
-
-| Platform | Artifact |
-| --- | --- |
-| Linux x86_64 | `datadock-linux-x86_64-<mode>` |
-| macOS (Apple Silicon) | `datadock-macos-aarch64-<mode>` |
-| macOS (Intel) | `datadock-macos-x86_64-<mode>` |
-| Windows x86_64 | `datadock-windows-x86_64-<mode>` |
-
-Each artifact contains a single executable named after its platform, such as `datadock-linux-x86_64` or `datadock-windows-x86_64.exe`. Download them from the **Artifacts** section at the bottom of the workflow run page, and keep them for 14 days.
-
-The same run can be started from the command line with the GitHub CLI:
-
-```sh
-gh workflow run build.yml --ref <branch> -f build-mode=release   # or -f build-mode=debug
-```
-
-> **Note:** GitHub only shows the *Run workflow* button once the workflow file exists on the default branch. Use the built-in branch selector (or `--ref`) to build a different branch.
+   This is handy during development, but for regular use prefer the prebuilt binary or `cargo build --release`.
 
 ---
 
