@@ -1,11 +1,11 @@
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Component, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::thread;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::file_utils::{FailedFiles, collect_files, copy_file_list, files_differ};
 
@@ -14,8 +14,8 @@ type CopyThreadJoinHandle = thread::JoinHandle<io::Result<FailedFiles>>;
 /// A single backup/copy task, deserialized from a `tasks.toml` entry.
 ///
 /// Task behavior (scanning and copying files) lives here in `core::task`;
-/// `config.rs` only handles loading the list from disk.
-#[derive(Debug, Deserialize)]
+/// `config.rs` handles loading and persisting the task list.
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Task {
     /// Human-readable name of the task.
     name: String,
@@ -35,7 +35,7 @@ pub struct Task {
 ///
 /// This models the on-disk structure and schedules the tasks it contains;
 /// creating, loading, and validating the file itself lives in `config.rs`.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct TasksList {
     /// The tasks defined in the config file. Defaults to an empty list, so an
     /// empty config file deserializes cleanly.
@@ -44,6 +44,31 @@ pub struct TasksList {
 }
 
 impl Task {
+    /// Create a task from its config fields.
+    ///
+    /// The fields are private so tasks can only be built through this
+    /// constructor from outside `core::task`; call [`Task::validate`] before
+    /// persisting the task.
+    pub fn new(name: String, src: PathBuf, dst: PathBuf, scan_contents: bool) -> Self {
+        Self {
+            name,
+            src,
+            dst,
+            scan_contents,
+        }
+    }
+    /// Return this task's human-readable name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Return this task's source path.
+    pub fn src(&self) -> &Path {
+        &self.src
+    }
+    /// Return this task's destination path.
+    pub fn dst(&self) -> &Path {
+        &self.dst
+    }
     /// Validate this task's configuration, returning an error when it is
     /// invalid.
     ///

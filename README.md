@@ -11,6 +11,7 @@ Each backup job is called a **task**. Tasks are declared in a single TOML config
 - **Mirrors, but never deletes** — files that exist only in the destination are left untouched; `datadock` never deletes destination-only files.
 - **Safe copies** — each file is streamed to a temporary file alongside its destination and atomically renamed into place, so a failed copy never corrupts or truncates an existing file. The source file's permission bits are preserved.
 - **Dry run** — pass `--dry-run` to list the files a run would copy without changing the destination.
+- **Guided setup** — run `datadock config add` to add a task, or `datadock config remove` to remove one, interactively.
 
 ---
 
@@ -31,6 +32,8 @@ Each backup job is called a **task**. Tasks are declared in a single TOML config
   - [Symlinks](#symlinks)
   - [Concurrency](#concurrency)
 - [Running](#running)
+  - [Adding a task](#adding-a-task)
+  - [Removing a task](#removing-a-task)
   - [Dry run](#dry-run)
 - [Logging](#logging)
 - [License](#license)
@@ -125,7 +128,7 @@ scan_contents = true
 
 ### Validation rules
 
-Each task is validated when the config file is loaded. A task is rejected (and, on startup, the whole run exits with an error) when:
+Each task is validated when the config file is loaded, and the whole list is validated again before `datadock config add` or `datadock config remove` writes the file. A task is rejected (and, on startup, the whole run exits with an error) when:
 
 1. **`src` is not an absolute path.**
 2. **`dst` is not an absolute path.**
@@ -206,9 +209,33 @@ datadock
 
 The program loads `tasks.toml`, prints a short summary to the console (`Run finished: N task(s) succeeded, M task(s) failed, K file(s) failed.`), and writes detailed logs to a file (see [Logging](#logging)). The first two counts are **tasks** and the last is **individual files**. Tasks skipped because `src` or `dst` is missing are not counted. A task is counted as failed when planning its file list fails, when its copy thread returns an error, or when its thread panics; a task whose individual files fail to copy still counts as succeeded, but those files are counted separately in the summary.
 
-Exit code `1` is returned when the config file fails to load, parse, or validate; when logging cannot be initialized; when any task fails; when any file fails to copy; or when a task's scan fails during a dry run. Tasks skipped because `src` or `dst` is missing do not change the exit code.
+Exit code `1` is returned when the config file fails to load, parse, or validate; when logging cannot be initialized; when adding or removing a task fails; when any task fails; when any file fails to copy; or when a task's scan fails during a dry run. Tasks skipped because `src` or `dst` is missing do not change the exit code.
 
 Run `datadock --help` to see all options and `datadock --version` to print the version.
+
+### Adding a task
+
+Run `datadock config add` to add a task interactively:
+
+```sh
+datadock config add
+```
+
+It prompts for the task `name`, `src`, `dst`, and whether to `scan_contents`, shows a summary of the new task, and asks for confirmation before saving. The task is validated with the same [validation rules](#validation-rules) used when loading the file, then appended to `tasks.toml`.
+
+Adding a task rewrites the whole config file: tasks loaded at startup are preserved, but any comments or custom formatting in `tasks.toml` are not. The file is replaced atomically, so a failed save leaves the previous config intact. Canceling the confirmation leaves the file unchanged. Do not edit `tasks.toml` in another program while `datadock config add` is running; the rewritten file is based on the tasks loaded at startup, so such edits are overwritten.
+
+### Removing a task
+
+Run `datadock config remove` to remove an existing task interactively:
+
+```sh
+datadock config remove
+```
+
+It shows a list of the configured tasks (each labeled with its source and destination paths) and lets you select the one to remove. After you confirm, the task is deleted from `tasks.toml`. When no tasks are configured, it prints a message and exits without removing any task. (Startup may still create the config file and log file if they do not exist.)
+
+Removing a task rewrites the whole config file: the remaining tasks loaded at startup are preserved, but any comments or custom formatting in `tasks.toml` are not. The file is replaced atomically, so a failed save leaves the previous config intact. Canceling the confirmation leaves the file unchanged. Do not edit `tasks.toml` in another program while `datadock config remove` is running; the rewritten file is based on the tasks loaded at startup, so such edits are overwritten.
 
 ### Dry run
 
