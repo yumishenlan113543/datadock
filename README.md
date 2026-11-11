@@ -20,22 +20,19 @@ Each backup job is called a **task**. Tasks are declared in a single TOML config
 - [Installation](#installation)
   - [Prebuilt binaries](#prebuilt-binaries)
   - [Building from source](#building-from-source)
-- [Configuration file](#configuration-file)
-  - [Location](#location)
-  - [Format](#format)
-  - [Fields](#fields)
-  - [Validation rules](#validation-rules)
+- [Running](#running)
+  - [Adding a task](#adding-a-task)
+  - [Removing a task](#removing-a-task)
+  - [Dry run](#dry-run)
 - [How a task works](#how-a-task-works)
   - [The destination must already exist](#the-destination-must-already-exist)
   - [What gets copied](#what-gets-copied)
   - [Ignored and hidden files](#ignored-and-hidden-files)
   - [Symlinks](#symlinks)
   - [Concurrency](#concurrency)
-- [Running](#running)
-  - [Adding a task](#adding-a-task)
-  - [Removing a task](#removing-a-task)
-  - [Dry run](#dry-run)
-- [Logging](#logging)
+- [Configuration and logging](#configuration-and-logging)
+  - [Config file](#config-file)
+  - [Logging](#logging)
 - [License](#license)
 
 ---
@@ -85,60 +82,53 @@ Each release provides one executable per platform. Download the file for your sy
 
 ---
 
-## Configuration file
+## Running
 
-`datadock` reads its tasks from a single TOML file named `tasks.toml`. The file is **created automatically (empty)** the first time you run `datadock` if it does not already exist.
-
-### Location
-
-The file is resolved through the platform's standard user-config directory (using the `directories` crate with the application name `datadock`):
-
-| Platform | Config file path |
-| --- | --- |
-| Linux | `$XDG_CONFIG_HOME/datadock/tasks.toml` (or `~/.config/datadock/tasks.toml`) |
-| macOS | `~/Library/Application Support/datadock/tasks.toml` |
-| Windows | `%APPDATA%\datadock\config\tasks.toml` (e.g. `C:\Users\<You>\AppData\Roaming\datadock\config\tasks.toml`) |
-
-### Format
-
-The file is TOML. At the top level it recognizes a single `tasks` key, whose value is an **array of tables** (one table per task). A task has four recognized fields, all required; unknown fields are ignored. For example:
-
-```toml
-[[tasks]]
-name          = "photos"
-src           = "/home/user/Pictures"
-dst           = "/mnt/backup/Pictures"
-scan_contents = false
-
-[[tasks]]
-name          = "documents"
-src           = "/home/user/Documents"
-dst           = "/mnt/backup/Documents"
-scan_contents = true
+```sh
+datadock
 ```
 
-### Fields
+The program loads `tasks.toml` (see [Config file](#config-file)), prints a short summary to the console (`Run finished: N task(s) succeeded, M task(s) failed, K file(s) failed.`), and writes detailed logs to a file (see [Logging](#logging)). The first two counts are **tasks** and the last is **individual files**. Tasks skipped because `src` or `dst` is missing are not counted. A task is counted as failed when planning its file list fails, when its copy thread returns an error, or when its thread panics; a task whose individual files fail to copy still counts as succeeded, but those files are counted separately in the summary.
 
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `name` | string | yes | A human-readable label for the task. Used in progress output and logs. |
-| `src` | string (path) | yes | The absolute source directory to copy **from**. Must not contain `..` components. |
-| `dst` | string (path) | yes | The absolute destination directory to copy **to**. Must not contain `..` components. |
-| `scan_contents` | boolean | yes | When `true`, files whose contents differ are copied over their destination copies. When `false`, only files missing from `dst` are copied; existing files are kept even if their contents differ. |
+Exit code `1` is returned when the config file fails to load, parse, or validate; when logging cannot be initialized; when adding or removing a task fails; when any task fails; when any file fails to copy; or when a task's scan fails during a dry run. Tasks skipped because `src` or `dst` is missing do not change the exit code.
 
-### Validation rules
+Run `datadock --help` to see all options and `datadock --version` to print the version.
 
-Each task is validated when the config file is loaded, and the whole list is validated again before `datadock config add` or `datadock config remove` writes the file. A task is rejected (and, on startup, the whole run exits with an error) when:
+### Adding a task
 
-1. **`src` is not an absolute path.**
-2. **`dst` is not an absolute path.**
-3. **`src` or `dst` contains a `..` component.** Paths are used as written, so `..` is rejected rather than resolved.
-4. **`src` or `dst` exists but is not a directory.** Missing paths are allowed, since they may be on an unmounted removable drive; such a task is skipped at run time instead.
-5. **`src` and `dst` are identical**, or **one is nested inside the other** (in either direction). This would cause a directory to be backed up into itself, so it is always rejected — including when the nesting happens through a symlink that exists at load time.
+Run `datadock config add` to add a task interactively:
 
-A valid `src`/`dst` pair are therefore two *unrelated* absolute paths without `..` components, e.g. `/home/user/Pictures` → `/mnt/backup/Pictures`.
+```sh
+datadock config add
+```
 
-If the config file cannot be parsed as TOML, `datadock` also reports an error and exits. A completely empty `tasks.toml` (or one with no `tasks` key) is valid and simply means "nothing to do".
+It prompts for the task `name`, `src`, `dst`, and whether to `scan_contents`, shows a summary of the new task, and asks for confirmation before saving. The task is validated with the same rules used when loading the file, then appended to `tasks.toml`: `src` and `dst` must be absolute paths without `..` components, must be distinct (neither nested inside the other, directly or through a symlink), and any path that already exists must be a directory. Missing directories are allowed — such a task is simply skipped at run time until they exist.
+
+Adding a task rewrites the whole config file: tasks loaded at startup are preserved, but any comments or custom formatting in `tasks.toml` are not. The file is replaced atomically, so a failed save leaves the previous config intact. Canceling the confirmation leaves the file unchanged. Do not edit `tasks.toml` in another program while `datadock config add` is running; the rewritten file is based on the tasks loaded at startup, so such edits are overwritten.
+
+### Removing a task
+
+Run `datadock config remove` to remove an existing task interactively:
+
+```sh
+datadock config remove
+```
+
+It shows a list of the configured tasks (each labeled with its source and destination paths) and lets you select the one to remove. After you confirm, the task is deleted from `tasks.toml`. When no tasks are configured, it prints a message and exits without removing any task. (Startup may still create the config file and log file if they do not exist.)
+
+Removing a task rewrites the whole config file: the remaining tasks loaded at startup are preserved, but any comments or custom formatting in `tasks.toml` are not. The file is replaced atomically, so a failed save leaves the previous config intact. Canceling the confirmation leaves the file unchanged. Do not edit `tasks.toml` in another program while `datadock config remove` is running; the rewritten file is based on the tasks loaded at startup, so such edits are overwritten.
+
+### Dry run
+
+Pass `--dry-run` to preview a run without copying anything:
+
+```sh
+datadock --dry-run
+```
+
+For each task whose `src` and `dst` both exist and are directories, it prints the absolute source path of every file that would be copied, using the same rules as a real run (see [What gets copied](#what-gets-copied)). Files that are already up to date, and hidden or ignored files, are omitted. Tasks whose `src` or `dst` is missing are skipped with a message, just like a normal run.
+
+A dry run does not create destination directories, copy or delete files, show progress bars, or print the `Run finished` summary. (As with any run, startup may still create the config and log locations if they do not exist.) `scan_contents` still controls whether changed files are reported, and a task whose scan fails is reported without stopping the remaining tasks.
 
 ---
 
@@ -154,7 +144,7 @@ For each task, `datadock`:
 
 **A task only starts when both `src` and `dst` already exist and are directories. This is by design.**
 
-If either the source directory or the destination directory is missing, the task is **skipped** (a message is printed to the console and the log) rather than run. An existing path that is not a directory is instead rejected when the config is loaded (see [Validation rules](#validation-rules)). `datadock` intentionally does **not** create the destination root directory for you, and a skipped task is **not** counted as a failure.
+If either the source directory or the destination directory is missing, the task is **skipped** (a message is printed to the console and the log) rather than run. An existing path that is not a directory is instead rejected when the config is loaded (see the validation rules under [Adding a task](#adding-a-task)). `datadock` intentionally does **not** create the destination root directory for you, and a skipped task is **not** counted as a failure.
 
 > Why: `src` or `dst` is often a removable drive (an external disk, USB stick, or SD card) that is not always connected or mounted. `datadock` requires both directories to be present before starting so a backup is never silently missed — a missing drive is instead surfaced as a visible "skipping" message, prompting you to plug it in.
 
@@ -201,65 +191,44 @@ Tasks are planned one at a time on the main thread: each task's source and desti
 
 ---
 
-## Running
+## Configuration and logging files
 
-```sh
-datadock
+`datadock` stores its task list in `tasks.toml` and its log in `app.log`, both under the platform's standard user directories. The config file is created empty on first run if it does not already exist.
+
+| Platform | Config (`tasks.toml`) | Log (`app.log`) |
+| --- | --- | --- |
+| Linux | `$XDG_CONFIG_HOME/datadock/tasks.toml` (or `~/.config/datadock/tasks.toml`) | `$XDG_DATA_HOME/datadock/app.log` (or `~/.local/share/datadock/app.log`) |
+| macOS | `~/Library/Application Support/datadock/tasks.toml` | `~/Library/Application Support/datadock/app.log` |
+| Windows | `%APPDATA%\datadock\config\tasks.toml` | `%APPDATA%\datadock\data\app.log` |
+
+### Config file
+
+The config file is TOML. At the top level it recognizes a single `tasks` key, whose value is an **array of tables** (one table per task). All four fields are required; unknown fields are ignored.
+
+```toml
+[[tasks]]
+name          = "photos"
+src           = "/home/user/Pictures"
+dst           = "/mnt/backup/Pictures"
+scan_contents = false
+
+[[tasks]]
+name          = "documents"
+src           = "/home/user/Documents"
+dst           = "/mnt/backup/Documents"
+scan_contents = true
 ```
 
-The program loads `tasks.toml`, prints a short summary to the console (`Run finished: N task(s) succeeded, M task(s) failed, K file(s) failed.`), and writes detailed logs to a file (see [Logging](#logging)). The first two counts are **tasks** and the last is **individual files**. Tasks skipped because `src` or `dst` is missing are not counted. A task is counted as failed when planning its file list fails, when its copy thread returns an error, or when its thread panics; a task whose individual files fail to copy still counts as succeeded, but those files are counted separately in the summary.
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | string | A human-readable label for the task. Used in progress output and logs. |
+| `src` | string (path) | The absolute source directory to copy **from**. Must not contain `..` components. |
+| `dst` | string (path) | The absolute destination directory to copy **to**. Must not contain `..` components. |
+| `scan_contents` | boolean | When `true`, files whose contents differ are copied over their destination copies. When `false`, only files missing from `dst` are copied. |
 
-Exit code `1` is returned when the config file fails to load, parse, or validate; when logging cannot be initialized; when adding or removing a task fails; when any task fails; when any file fails to copy; or when a task's scan fails during a dry run. Tasks skipped because `src` or `dst` is missing do not change the exit code.
+A file that cannot be parsed as TOML is reported as an error; a completely empty file (or one with no `tasks` key) simply means "nothing to do".
 
-Run `datadock --help` to see all options and `datadock --version` to print the version.
-
-### Adding a task
-
-Run `datadock config add` to add a task interactively:
-
-```sh
-datadock config add
-```
-
-It prompts for the task `name`, `src`, `dst`, and whether to `scan_contents`, shows a summary of the new task, and asks for confirmation before saving. The task is validated with the same [validation rules](#validation-rules) used when loading the file, then appended to `tasks.toml`.
-
-Adding a task rewrites the whole config file: tasks loaded at startup are preserved, but any comments or custom formatting in `tasks.toml` are not. The file is replaced atomically, so a failed save leaves the previous config intact. Canceling the confirmation leaves the file unchanged. Do not edit `tasks.toml` in another program while `datadock config add` is running; the rewritten file is based on the tasks loaded at startup, so such edits are overwritten.
-
-### Removing a task
-
-Run `datadock config remove` to remove an existing task interactively:
-
-```sh
-datadock config remove
-```
-
-It shows a list of the configured tasks (each labeled with its source and destination paths) and lets you select the one to remove. After you confirm, the task is deleted from `tasks.toml`. When no tasks are configured, it prints a message and exits without removing any task. (Startup may still create the config file and log file if they do not exist.)
-
-Removing a task rewrites the whole config file: the remaining tasks loaded at startup are preserved, but any comments or custom formatting in `tasks.toml` are not. The file is replaced atomically, so a failed save leaves the previous config intact. Canceling the confirmation leaves the file unchanged. Do not edit `tasks.toml` in another program while `datadock config remove` is running; the rewritten file is based on the tasks loaded at startup, so such edits are overwritten.
-
-### Dry run
-
-Pass `--dry-run` to preview a run without copying anything:
-
-```sh
-datadock --dry-run
-```
-
-For each task whose `src` and `dst` both exist and are directories, it prints the absolute source path of every file that would be copied, using the same rules as a real run (see [What gets copied](#what-gets-copied)). Files that are already up to date, and hidden or ignored files, are omitted. Tasks whose `src` or `dst` is missing are skipped with a message, just like a normal run.
-
-A dry run does not create destination directories, copy or delete files, show progress bars, or print the `Run finished` summary. (As with any run, startup may still create the config and log locations if they do not exist.) `scan_contents` still controls whether changed files are reported, and a task whose scan fails is reported without stopping the remaining tasks.
-
----
-
-## Logging
-
-`datadock` writes its log to `app.log` in the platform's user **data** directory (note that on Linux and Windows this is a different directory from the config file's):
-
-| Platform | Log file path |
-| --- | --- |
-| Linux | `$XDG_DATA_HOME/datadock/app.log` (or `~/.local/share/datadock/app.log`) |
-| macOS | `~/Library/Application Support/datadock/app.log` |
-| Windows | `%APPDATA%\datadock\data\app.log` (e.g. `C:\Users\<You>\AppData\Roaming\datadock\data\app.log`) |
+### Logging
 
 The log is truncated at the start of each run. The default level is `Info`; set the `RUST_LOG` environment variable to change it, e.g. `RUST_LOG=debug datadock`.
 
