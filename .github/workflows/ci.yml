@@ -5,10 +5,16 @@ on:
     branches:
       - main
       - develop
+    # Skip CI when the push only touches documentation or other non-code files.
+    paths-ignore: &paths-ignore
+      - "**/*.md"
+      - ".gitignore"
+      - "LICENSE"
   pull_request:
     branches:
       - main
       - develop
+    paths-ignore: *paths-ignore
   workflow_dispatch:
   workflow_call:
 
