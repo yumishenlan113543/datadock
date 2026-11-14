@@ -1,5 +1,7 @@
 # datadock
 
+[![crates.io](https://img.shields.io/crates/v/datadock.svg)](https://crates.io/crates/datadock)
+
 `datadock` is a small command-line file-backup tool written in Rust. It copies files from one or more *source* directories to matching *destination* directories, keeping the destination up to date with the source according to each task's settings.
 
 > **Positioning:** `datadock` is a tool for simple file backups (like photos and videos). If you need more advanced options, please look for another backup tool.
@@ -18,6 +20,7 @@ Each backup job is called a **task**. Tasks are declared in a single TOML config
 ## Table of contents
 
 - [Installation](#installation)
+  - [Installing with Cargo](#installing-with-cargo)
   - [Prebuilt binaries](#prebuilt-binaries)
   - [Building from source](#building-from-source)
 - [Running](#running)
@@ -39,9 +42,21 @@ Each backup job is called a **task**. Tasks are declared in a single TOML config
 
 ## Installation
 
+The methods below are listed from most to least recommended.
+
+### Installing with Cargo (Recommended)
+
+If you have a Rust toolchain (see [Building from source](#building-from-source) for how to get one), the recommended way to install `datadock` is from [crates.io](https://crates.io/crates/datadock):
+
+```sh
+cargo install datadock
+```
+
+This downloads, compiles, and installs the latest published release into Cargo's binary directory (`~/.cargo/bin` by default), which should already be on your `PATH`. To upgrade later, run the same command again.
+
 ### Prebuilt binaries
 
-Download the binary for your platform from the [Releases](https://github.com/yumishenlan113543/datadock/releases) page. No Rust toolchain is required.
+If you don't have a Rust toolchain, download the binary for your platform from the [Releases](https://github.com/yumishenlan113543/datadock/releases) page. No Rust toolchain is required.
 
 | Platform | Binary |
 | --- | --- |
@@ -53,6 +68,8 @@ Download the binary for your platform from the [Releases](https://github.com/yum
 Each release provides one executable per platform. Download the file for your system, make it executable if needed (`chmod +x datadock-*` on Linux/macOS), and run it directly.
 
 ### Building from source
+
+Use this if you want to build from a checkout, for example to try an unreleased change or to run the test suite.
 
 `datadock` is built with Cargo (Rust's package manager) and requires a stable Rust toolchain (edition 2024).
 
@@ -78,7 +95,7 @@ Each release provides one executable per platform. Download the file for your sy
    cargo run
    ```
 
-   This is handy during development, but for regular use prefer the prebuilt binary or `cargo build --release`.
+   This is handy during development, but for regular use prefer `cargo install datadock` or the prebuilt binary.
 
 ---
 
