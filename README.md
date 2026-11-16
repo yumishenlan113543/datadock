@@ -198,9 +198,7 @@ Ignored entries are not errors; they are simply left out of the scan. If a file 
 
 ### Symlinks
 
-Directory symlinks are **not followed**: a symlink to a directory is skipped and its contents are not scanned.
-
-A symlink to a regular file is collected during the scan and copied as a regular file containing the target's contents; the result under `dst` is not a symlink. Broken symlinks, and symlinks to anything other than a regular file or directory, are skipped.
+Symlinks are **not followed**. A symlink is skipped whether it points to a regular file, a directory, or nothing at all, so its target is never scanned or copied and the link itself is not reproduced under `dst`. A task whose configured `src` or `dst` is itself a symlink is skipped, and a copy is refused (and reported as a failed file) if a symlinked directory would have to be traversed under `dst`.
 
 ### Concurrency
 

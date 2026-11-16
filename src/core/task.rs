@@ -166,14 +166,15 @@ impl Task {
 
         Ok(())
     }
-    /// Return whether both the source and destination paths exist and are
-    /// directories.
+    /// Return whether both the source and destination paths exist and are real
+    /// directories (not symlinks).
     ///
     /// [`TasksList::run`] skips a task whose directories are missing (e.g. an
-    /// unmounted removable drive) or are not directories instead of scheduling
-    /// it.
+    /// unmounted removable drive), are not directories, or are symlinks instead
+    /// of scheduling it.
     fn directories_exist(&self) -> bool {
-        self.src.is_dir() && self.dst.is_dir()
+        fs::symlink_metadata(&self.src).is_ok_and(|metadata| metadata.file_type().is_dir())
+            && fs::symlink_metadata(&self.dst).is_ok_and(|metadata| metadata.file_type().is_dir())
     }
     /// Compute the relative paths and byte sizes of every source file that must
     /// be copied to make `dst` mirror `src`.
@@ -723,6 +724,29 @@ mod tests {
         assert!(!task("t", &src_file, &dst).directories_exist());
         assert!(!task("t", &src, &dst_file).directories_exist());
         assert!(!task("t", &src_file, &dst_file).directories_exist());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directories_exist_rejects_symlinked_directories() {
+        let dir = temp_dir("dirs_exist_symlink");
+        let real_src = dir.join("real_src");
+        let real_dst = dir.join("real_dst");
+        fs::create_dir_all(&real_src).unwrap();
+        fs::create_dir_all(&real_dst).unwrap();
+        let src_link = dir.join("src_link");
+        let dst_link = dir.join("dst_link");
+        std::os::unix::fs::symlink(&real_src, &src_link).unwrap();
+        std::os::unix::fs::symlink(&real_dst, &dst_link).unwrap();
+
+        // A symlinked root is not treated as a directory, so its task is
+        // skipped instead of being traversed.
+        assert!(!task("t", &src_link, &real_dst).directories_exist());
+        assert!(!task("t", &real_src, &dst_link).directories_exist());
+        assert!(!task("t", &src_link, &dst_link).directories_exist());
+        assert!(task("t", &real_src, &real_dst).directories_exist());
 
         fs::remove_dir_all(&dir).unwrap();
     }

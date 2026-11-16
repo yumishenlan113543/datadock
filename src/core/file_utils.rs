@@ -16,8 +16,9 @@ pub(super) type FailedFiles = Vec<(PathBuf, String)>;
 /// Discovery uses the `ignore` crate with default settings: hidden entries and
 /// ignored files (`.ignore`, `.gitignore`, `.git/info/exclude`, and the global
 /// git ignore) are skipped, with git rules only applying inside a repository.
-/// Directory symlinks are not followed, but a symlink to a regular file is
-/// collected. Other entry types are skipped.
+/// Symlinks are not followed: they are skipped whether they point to a file or
+/// a directory, so a link can never pull content in from outside the scanned
+/// tree. Other entry types are skipped too.
 ///
 /// Unreadable entries are logged and skipped, and a missing `root` yields an
 /// empty set rather than an error.
@@ -26,13 +27,26 @@ pub(super) fn collect_files(root: &Path) -> HashSet<PathBuf> {
 
     debug!("Collecting files under \"{}\"", root.display());
 
+    // Do not follow a symlink used as the root either.
+    if fs::symlink_metadata(root).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        debug!(
+            "Skipping symlinked root \"{}\" because symlinks are not followed",
+            root.display()
+        );
+        return files;
+    }
+
     for entry in Walk::new(root) {
         match entry {
-            // Insert the path of every regular file into the set.
+            // Insert the path of every regular file into the set. The entry's
+            // own file type is used (rather than `Path::is_file`, which follows
+            // symlinks), so symlinks are skipped instead of being followed.
             Ok(entry) => {
-                let path = entry.path();
-                if path.is_file() {
-                    files.insert(path.to_path_buf());
+                if entry
+                    .file_type()
+                    .is_some_and(|file_type| file_type.is_file())
+                {
+                    files.insert(entry.into_path());
                 }
             }
             // Log a warning for any entry that cannot be read.
@@ -83,6 +97,31 @@ pub(super) fn files_differ(file_a: &Path, file_b: &Path) -> io::Result<bool> {
     }
 }
 
+/// Return the first existing symlink among the directories leading to `rel`
+/// under `root`, if any.
+///
+/// Used to refuse copying through a symlinked destination directory: path
+/// resolution would otherwise follow the link and write outside `root`.
+fn first_symlink_in_parent(root: &Path, rel: &Path) -> io::Result<Option<PathBuf>> {
+    let Some(parent) = rel.parent() else {
+        return Ok(None);
+    };
+
+    let mut path = root.to_path_buf();
+    for component in parent.components() {
+        path.push(component);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return Ok(Some(path)),
+            Ok(_) => {}
+            // A missing component means the remaining ones cannot exist yet.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        }
+    }
+
+    Ok(None)
+}
+
 /// Copy every file in `files` from under `src` to the matching path under
 /// `dst`, preserving the relative directory structure.
 ///
@@ -111,6 +150,22 @@ pub(super) fn copy_file_list(
         // Source path = src / relative path, target = dst / relative path.
         let src_path = src.join(rel);
         let target = dst.join(rel);
+
+        // Refuse to copy through a symlinked destination directory: creating
+        // the parent and renaming the file into place would follow the link and
+        // write outside `dst`.
+        if let Some(link) = first_symlink_in_parent(dst, rel)? {
+            let message = format!(
+                "destination path component \"{}\" is a symlink",
+                link.display()
+            );
+            warn!(
+                "Failed to copy \"{}\": {message}; skipping it",
+                src_path.display()
+            );
+            failures.push((src_path, message));
+            continue;
+        }
 
         // Create parent directory (keep directory structure)
         if let Some(parent) = target.parent() {
@@ -297,23 +352,38 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn collect_files_includes_symlinked_files_without_following_directory_symlinks() {
+    fn collect_files_skips_all_symlinks() {
         let dir = temp_dir("collect_symlinks");
         write_file(&dir.join("real.txt"), b"real");
         std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
         write_file(&dir.join("real_dir").join("nested.txt"), b"nested");
         std::os::unix::fs::symlink(dir.join("real_dir"), dir.join("link_dir")).unwrap();
+        std::os::unix::fs::symlink(dir.join("missing.txt"), dir.join("broken_link.txt")).unwrap();
 
         let files = collect_files(&dir);
-        assert_eq!(files.len(), 3);
+        assert_eq!(files.len(), 2);
         assert!(files.contains(&dir.join("real.txt")));
-        // A symlink to a regular file is collected as a file...
-        assert!(files.contains(&dir.join("link.txt")));
         assert!(files.contains(&dir.join("real_dir").join("nested.txt")));
-        // ...but a symlink to a directory is neither collected nor descended
-        // into.
+        // Symlinks are neither collected nor followed, whether they point to a
+        // file, a directory, or nothing at all.
+        assert!(!files.contains(&dir.join("link.txt")));
         assert!(!files.contains(&dir.join("link_dir")));
         assert!(!files.contains(&dir.join("link_dir").join("nested.txt")));
+        assert!(!files.contains(&dir.join("broken_link.txt")));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_files_skips_symlinked_root() {
+        let dir = temp_dir("collect_symlink_root");
+        write_file(&dir.join("real").join("a.txt"), b"a");
+        let root = dir.join("link");
+        std::os::unix::fs::symlink(dir.join("real"), &root).unwrap();
+
+        let files = collect_files(&root);
+        assert!(files.is_empty());
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -463,6 +533,28 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn copy_file_stream_does_not_write_through_destination_symlink() {
+        let dir = temp_dir("copy_stream_dst_symlink");
+        let src = dir.join("src.txt");
+        let target = dir.join("target.txt");
+        let dst = dir.join("dst.txt");
+        write_file(&src, b"new");
+        write_file(&target, b"original");
+        std::os::unix::fs::symlink(&target, &dst).unwrap();
+
+        copy_file_stream(&src, &dst, &hidden_bar()).unwrap();
+
+        // The symlink itself is replaced by the copied file; its target is
+        // left untouched instead of being written through.
+        assert_eq!(fs::read(&dst).unwrap(), b"new");
+        assert!(!fs::symlink_metadata(&dst).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn copy_file_list_preserves_relative_structure() {
         let dir = temp_dir("copy_list");
@@ -508,6 +600,38 @@ mod tests {
         assert_eq!(failed_path, &src.join("missing.txt"));
         assert!(!error_message.is_empty());
         assert!(bar.is_finished());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_file_list_does_not_follow_destination_directory_symlink() {
+        let dir = temp_dir("copy_list_dst_dir_symlink");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        let outside = dir.join("outside");
+        write_file(&src.join("sub").join("a.txt"), b"a");
+        fs::create_dir_all(&dst).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dst.join("sub")).unwrap();
+
+        let files = vec![(PathBuf::from("sub").join("a.txt"), 1)];
+        let failures = copy_file_list(&src, &dst, &files, &hidden_bar()).unwrap();
+
+        // The file is reported as failed and nothing is written through the
+        // link, which itself is left intact.
+        assert_eq!(failures.len(), 1);
+        let (failed_path, error_message) = &failures[0];
+        assert_eq!(failed_path, &src.join("sub").join("a.txt"));
+        assert!(error_message.contains("symlink"));
+        assert!(!outside.join("a.txt").exists());
+        assert!(
+            fs::symlink_metadata(dst.join("sub"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
 
         fs::remove_dir_all(&dir).unwrap();
     }
