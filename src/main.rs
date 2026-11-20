@@ -73,16 +73,16 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Manage the task configuration.
-    Config {
+    Task {
         /// The configuration action to perform.
         #[command(subcommand)]
-        action: ConfigAction,
+        action: TaskAction,
     },
 }
 
 /// Configuration actions for `datadock config`.
 #[derive(Subcommand, Debug)]
-enum ConfigAction {
+enum TaskAction {
     /// Add a task to the config file interactively.
     Add,
     /// Remove a task from the config file interactively.
@@ -181,7 +181,7 @@ fn remove_task_interactively(tasks_list: &mut TasksList) {
 
     // Confirm with the user before removing the task from the list.
     if Confirm::new()
-        .with_prompt(format!("Remove task \"{}\"?", items[selection]))
+        .with_prompt("Confirm removal of the selected task?")
         .default(false)
         .interact()
         .unwrap()
@@ -336,9 +336,9 @@ fn main() {
     // Handle the subcommand or run the tasks.
     match cli.command {
         // Add or remove tasks in the config file.
-        Some(Commands::Config { action }) => match action {
-            ConfigAction::Add => add_task_interactively(&mut tasks_list),
-            ConfigAction::Remove => remove_task_interactively(&mut tasks_list),
+        Some(Commands::Task { action }) => match action {
+            TaskAction::Add => add_task_interactively(&mut tasks_list),
+            TaskAction::Remove => remove_task_interactively(&mut tasks_list),
         },
         // Run the configured tasks or perform a dry run of them if there is no subcommand specified.
         None => run(&tasks_list, cli.dry_run),
